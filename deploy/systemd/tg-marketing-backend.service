@@ -1,0 +1,17 @@
+[Unit]
+Description=TG Marketing FastAPI backend
+After=network.target mysql.service redis-server.service
+
+[Service]
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/tg-marketing/backend
+EnvironmentFile=/var/www/tg-marketing/backend/.env
+ExecStart=/var/www/tg-marketing/backend/.venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000 --proxy-headers
+Restart=always
+RestartSec=5
+StandardOutput=append:/var/log/tg-marketing/backend.log
+StandardError=append:/var/log/tg-marketing/backend-error.log
+
+[Install]
+WantedBy=multi-user.target
