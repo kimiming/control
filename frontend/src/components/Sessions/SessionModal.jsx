@@ -1,4 +1,4 @@
-import { Form, Input, Modal, Select } from 'antd';
+import { Form, Input, Modal, Select, Tag } from 'antd';
 import { useEffect } from 'react';
 
 export default function SessionModal({ open, groups, initialValues, onCancel, onSubmit, confirmLoading }) {
@@ -35,6 +35,10 @@ export default function SessionModal({ open, groups, initialValues, onCancel, on
           <Select
             allowClear
             options={groups.map((group) => ({ value: group.id, label: group.name }))}
+            optionRender={(option) => {
+              const group = groups.find((item) => item.id === option.value);
+              return <Tag color={group?.color || 'blue'}>{option.label}</Tag>;
+            }}
           />
         </Form.Item>
       </Form>

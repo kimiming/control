@@ -1,17 +1,18 @@
-import asyncio
-
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import messages, proxies, sessions, tasks
+from app.api import auth, customer_profiles, customers, materials, messages, proxies, sessions, support_agents, tasks
 from app.core.config import get_settings
 from app.core.database import Base, engine
-from app.models import Message, SessionGroup, SessionLog, TelegramSession
-from app.services.session_service import health_check_loop
+from app.core.migrations import run_lightweight_migrations
+from app.models import Customer, CustomerProfile, MarketingTask, Material, Message, ProxyConfig, SessionGroup, SessionLog, SessionTaskLog, SupportAgent, TelegramSession, User
+from app.services.incoming_listener import incoming_message_listener
 
 settings = get_settings()
 
 app = FastAPI(title=settings.app_name)
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 app.add_middleware(
     CORSMiddleware,
@@ -22,8 +23,13 @@ app.add_middleware(
 )
 
 app.include_router(sessions.router, prefix=settings.api_prefix)
+app.include_router(auth.router, prefix=settings.api_prefix)
 app.include_router(messages.router, prefix=settings.api_prefix)
 app.include_router(tasks.router, prefix=settings.api_prefix)
+app.include_router(materials.router, prefix=settings.api_prefix)
+app.include_router(customers.router, prefix=settings.api_prefix)
+app.include_router(customer_profiles.router, prefix=settings.api_prefix)
+app.include_router(support_agents.router, prefix=settings.api_prefix)
 app.include_router(proxies.router, prefix=settings.api_prefix)
 app.include_router(sessions.ws_router)
 
@@ -31,7 +37,13 @@ app.include_router(sessions.ws_router)
 @app.on_event("startup")
 async def startup() -> None:
     Base.metadata.create_all(bind=engine)
-    asyncio.create_task(health_check_loop())
+    run_lightweight_migrations()
+    incoming_message_listener.start()
+
+
+@app.on_event("shutdown")
+async def shutdown() -> None:
+    await incoming_message_listener.stop()
 
 
 @app.get("/health")

@@ -3,9 +3,12 @@ from typing import Any
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
 
+from app.core.auth import get_current_user
 from app.core.database import get_db
-from app.schemas.session import GroupCreate, MoveSessions, SessionCreate, SessionUpdate
+from app.models.user import User
+from app.schemas.session import GroupCreate, MoveSessions, MoveSessionsToAgent, MoveSessionsToProxy, SessionCreate, SessionUpdate
 from app.services.session_service import session_service
+from app.services.proxy_service import proxy_service
 from app.services.websocket_manager import session_ws_manager
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
@@ -13,71 +16,99 @@ ws_router = APIRouter(tags=["sessions-ws"])
 
 
 @router.get("")
-def list_sessions(group_id: int | None = None, db: Session = Depends(get_db)) -> list[dict[str, Any]]:
-    return [session_service.serialize_session(item) for item in session_service.list_sessions(db, group_id)]
+def list_sessions(
+    group_id: int | None = None,
+    kf_id: int | None = None,
+    status: str | None = None,
+    health_status: str | None = None,
+    keyword: str | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> list[dict[str, Any]]:
+    sessions = session_service.list_sessions(db, group_id, kf_id, status, health_status, keyword, user.id)
+    return [session_service.serialize_session(item) for item in sessions]
 
 
 @router.post("")
-def create_session(payload: SessionCreate, db: Session = Depends(get_db)) -> dict[str, Any]:
-    return session_service.serialize_session(session_service.create_session(db, payload.model_dump()))
+def create_session(payload: SessionCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    return session_service.serialize_session(session_service.create_session(db, payload.model_dump(), user.id))
 
 
 @router.put("/{session_id}")
-async def update_session(session_id: int, payload: SessionUpdate, db: Session = Depends(get_db)) -> dict[str, Any]:
+async def update_session(session_id: int, payload: SessionUpdate, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
     try:
-        session = await session_service.update_session(db, session_id, payload.model_dump(exclude_unset=True))
+        session = await session_service.update_session(db, session_id, payload.model_dump(exclude_unset=True), user.id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return session_service.serialize_session(session)
 
 
 @router.delete("/{session_id}")
-async def delete_session(session_id: int, db: Session = Depends(get_db)) -> dict[str, bool]:
+async def delete_session(session_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, bool]:
     try:
-        await session_service.delete_session(db, session_id)
+        await session_service.delete_session(db, session_id, user.id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {"ok": True}
 
 
 @router.post("/import")
-async def import_sessions(file: UploadFile = File(...), db: Session = Depends(get_db)) -> dict[str, int]:
-    return await session_service.import_sessions(db, file)
+async def import_sessions(file: UploadFile = File(...), db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, int]:
+    return await session_service.import_sessions(db, file, user.id)
 
 
 @router.get("/groups")
-def list_groups(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
+def list_groups(db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> list[dict[str, Any]]:
     return [
         {
             "id": group.id,
             "name": group.name,
             "description": group.description,
+            "color": group.color,
             "created_at": group.created_at.isoformat(),
         }
-        for group in session_service.list_groups(db)
+        for group in session_service.list_groups(db, user.id)
     ]
 
 
 @router.post("/groups")
-def create_group(payload: GroupCreate, db: Session = Depends(get_db)) -> dict[str, Any]:
-    group = session_service.create_group(db, payload.name, payload.description)
-    return {"id": group.id, "name": group.name, "description": group.description, "created_at": group.created_at.isoformat()}
+def create_group(payload: GroupCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    group = session_service.create_group(db, payload.name, payload.description, payload.color, user.id)
+    return {"id": group.id, "name": group.name, "description": group.description, "color": group.color, "created_at": group.created_at.isoformat()}
 
 
 @router.post("/move")
-async def move_sessions(payload: MoveSessions, db: Session = Depends(get_db)) -> dict[str, int]:
-    moved = await session_service.move_sessions(db, payload.session_ids, payload.group_id)
+async def move_sessions(payload: MoveSessions, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, int]:
+    moved = await session_service.move_sessions(db, payload.session_ids, payload.group_id, user.id)
+    return {"moved": moved}
+
+
+@router.post("/move-agent")
+async def move_sessions_to_agent(payload: MoveSessionsToAgent, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, int]:
+    moved = await session_service.move_sessions_to_agent(db, payload.session_ids, payload.kf_id, user.id)
+    return {"moved": moved}
+
+
+@router.post("/move-proxy")
+async def move_sessions_to_proxy(payload: MoveSessionsToProxy, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, int]:
+    try:
+        moved = proxy_service.assign_sessions(db, payload.session_ids, payload.proxy_id, user.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    sessions = session_service.get_sessions_by_ids(db, payload.session_ids, user.id)
+    for session in sessions:
+        await session_service.publish_status(session, "updated")
     return {"moved": moved}
 
 
 @router.post("/health-check")
-async def health_check(db: Session = Depends(get_db)) -> dict[str, int]:
-    return await session_service.health_check_once(db)
+async def health_check(db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, int]:
+    return await session_service.health_check_once(db, user.id)
 
 
 @router.get("/logs")
-def list_logs(session_id: int | None = None, limit: int = 100, db: Session = Depends(get_db)) -> list[dict[str, Any]]:
-    logs = session_service.list_logs(db, session_id, limit)
+def list_logs(session_id: int | None = None, limit: int = 100, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> list[dict[str, Any]]:
+    logs = session_service.list_logs(db, session_id, limit, user.id)
     return [
         {
             "id": item.id,
@@ -85,6 +116,26 @@ def list_logs(session_id: int | None = None, limit: int = 100, db: Session = Dep
             "action": item.action,
             "message": item.message,
             "operator": item.operator,
+            "created_at": item.created_at.isoformat(),
+        }
+        for item in logs
+    ]
+
+
+@router.get("/{session_id}/task-logs")
+def list_session_task_logs(session_id: int, limit: int = 100, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> list[dict[str, Any]]:
+    if not session_service.get_sessions_by_ids(db, [session_id], user.id):
+        raise HTTPException(status_code=404, detail="Session not found")
+    logs = session_service.list_task_logs(db, session_id, limit)
+    return [
+        {
+            "id": item.id,
+            "session_id": item.session_id,
+            "task_id": item.task_id,
+            "task_name": item.task_name,
+            "target_phone": item.target_phone,
+            "status": item.status,
+            "message": item.message,
             "created_at": item.created_at.isoformat(),
         }
         for item in logs

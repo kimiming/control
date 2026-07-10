@@ -9,8 +9,64 @@ body {
   font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
+.app-shell {
+  min-height: 100vh;
+}
+
+.brand-bar {
+  height: 60px;
+  display: flex;
+  align-items: center;
+  padding: 0 18px;
+}
+
+.app-header {
+  height: 60px;
+  line-height: 60px;
+  background: #fff;
+  padding: 0 24px;
+  border-bottom: 1px solid #edf0f3;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.ant-menu-inline {
+  border-inline-end: 0 !important;
+  padding: 4px 10px;
+}
+
+.ant-menu-light .ant-menu-item {
+  border-radius: 10px;
+}
+
+.ant-table-wrapper .ant-table {
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.ant-btn,
+.ant-input,
+.ant-input-affix-wrapper,
+.ant-select-selector,
+.ant-modal-content {
+  border-radius: 10px !important;
+}
+
 .page {
   padding: 20px;
+}
+
+.login-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #f3f4f6;
+}
+
+.login-card {
+  width: 360px;
 }
 
 .toolbar {
@@ -30,6 +86,68 @@ body {
   flex-wrap: wrap;
 }
 
+.filter-card {
+  margin-bottom: 14px;
+}
+
+.filter-card .ant-card-body > .ant-space {
+  gap: 12px 14px !important;
+}
+
+.filter-card .ant-input-search-button {
+  margin-left: 6px;
+}
+
+.session-action-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.session-action-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.session-move-row {
+  gap: 10px;
+}
+
+.customer-group-cell {
+  max-width: 220px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.customer-group-cell .ant-tag {
+  margin-bottom: 0;
+}
+
+.table-ellipsis-text {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  vertical-align: bottom;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.task-run-button:not(:disabled) {
+  color: #1677ff;
+  border-color: #1677ff;
+}
+
+.task-run-button:not(:disabled):hover,
+.task-run-button:not(:disabled):focus {
+  color: #fff !important;
+  background: #1677ff !important;
+  border-color: #1677ff !important;
+}
+
 .message-row {
   display: grid;
   grid-template-columns: 160px 140px 1fr;
@@ -45,4 +163,177 @@ body {
   border-radius: 8px;
   overflow: hidden;
   background: #fff;
+}
+
+.customer-workbench {
+  display: grid;
+  grid-template-columns: 320px minmax(420px, 1fr) 280px;
+  gap: 14px;
+  height: calc(100vh - 40px);
+}
+
+.customer-sidebar,
+.chat-panel,
+.customer-detail {
+  min-height: 0;
+  border: 1px solid #eceff3;
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 8px 24px rgba(31, 35, 40, 0.04);
+}
+
+.customer-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  overflow: hidden;
+}
+
+.customer-sidebar .ant-list {
+  overflow: auto;
+}
+
+.customer-list-item {
+  cursor: pointer;
+  padding: 0 !important;
+  margin-bottom: 8px;
+  background: transparent;
+  border: 0;
+}
+
+.customer-card {
+  width: 100%;
+  background: #f3f4f6;
+  transition: background 0.18s ease, border-color 0.18s ease;
+}
+
+.customer-list-item:hover .customer-card {
+  background: #eef1f5;
+  border-color: #d8dde6;
+}
+
+.customer-list-item.active .customer-card {
+  background: #edf5ff;
+  border-color: #83b7ff;
+}
+
+.customer-sidebar .ant-list-item {
+  border-block-end: 0 !important;
+}
+
+.customer-sidebar .ant-list-items {
+  padding-right: 4px;
+}
+
+.customer-card .ant-list-item-meta {
+  align-items: center;
+}
+
+.customer-card .ant-list-item-meta-title {
+  margin-bottom: 4px !important;
+}
+
+.chat-panel {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.chat-header,
+.chat-composer,
+.customer-detail {
+  padding: 12px;
+}
+
+.chat-messages {
+  flex: 1;
+  overflow: auto;
+  padding: 16px;
+  background: #f8fafc;
+}
+
+.chat-bubble {
+  max-width: 68%;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: #fff;
+}
+
+.chat-bubble.outbound {
+  margin-left: auto;
+  background: #e8f3ff;
+}
+
+.chat-image {
+  display: block;
+  max-width: 100%;
+  max-height: 240px;
+  object-fit: contain;
+  border-radius: 10px;
+  margin-bottom: 8px;
+}
+
+.chat-bubble span {
+  display: block;
+  margin-top: 4px;
+  color: #667085;
+  font-size: 12px;
+}
+
+.chat-composer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: end;
+  gap: 8px;
+  border-top: 1px solid #eceff3;
+}
+
+.chat-composer-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.chat-material-preview {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+  padding: 8px 10px;
+  background: #f3f4f6;
+  border: 1px solid #e7e9ee;
+  border-radius: 10px;
+}
+
+.chat-material-picker {
+  width: 280px;
+}
+
+.chat-material-picker .ant-select {
+  width: 100%;
+}
+
+.customer-detail {
+  overflow: auto;
+}
+
+.customer-info-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  padding: 10px 12px;
+  background: #f3f4f6;
+  border: 1px solid #e7e9ee;
+  border-radius: 12px;
+}
+
+.customer-info-card strong {
+  color: #1f2328;
+  font-weight: 600;
+  overflow-wrap: anywhere;
 }

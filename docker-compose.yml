@@ -1,46 +1,94 @@
 services:
   mysql:
     image: mysql:8.0
-    command: --default-authentication-plugin=mysql_native_password
+    container_name: tg-marketing-mysql
+    command:
+      - --default-authentication-plugin=mysql_native_password
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
     environment:
-      MYSQL_ROOT_PASSWORD: root_change_me
-      MYSQL_DATABASE: tg_marketing
-      MYSQL_USER: tg_user
-      MYSQL_PASSWORD: change_me
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root_change_me}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-tg_marketing}
+      MYSQL_USER: ${MYSQL_USER:-tg_user}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-change_me}
+      TZ: ${TZ:-Asia/Shanghai}
     volumes:
       - mysql_data:/var/lib/mysql
       - ./deploy/mysql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     ports:
-      - "3306:3306"
+      - "${MYSQL_PORT:-3306}:3306"
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u$${MYSQL_USER} -p$${MYSQL_PASSWORD} --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
     restart: unless-stopped
 
   redis:
     image: redis:7-alpine
+    container_name: tg-marketing-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - redis_data:/data
     ports:
-      - "6379:6379"
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
     restart: unless-stopped
 
   backend:
-    build: ./backend
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: tg-marketing-backend
     env_file:
       - ./backend/.env
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
     volumes:
       - telegram_sessions:/app/telegram_sessions
+      - ./backend/static:/app/static
     depends_on:
-      - mysql
-      - redis
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     ports:
-      - "8000:8000"
+      - "${BACKEND_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)\""]
+      interval: 20s
+      timeout: 8s
+      retries: 5
+      start_period: 20s
     restart: unless-stopped
 
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: tg-marketing-frontend
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     ports:
-      - "8080:80"
+      - "${FRONTEND_PORT:-8080}:80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/ >/dev/null 2>&1"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
 
 volumes:
   mysql_data:
+    name: tg_marketing_mysql_data
+  redis_data:
+    name: tg_marketing_redis_data
   telegram_sessions:
+    name: tg_marketing_telegram_sessions

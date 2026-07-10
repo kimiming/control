@@ -1,5 +1,5 @@
-import { DeleteOutlined, EditOutlined, LinkOutlined, DisconnectOutlined, MoreOutlined } from '@ant-design/icons';
-import { Avatar, Button, Dropdown, Popconfirm, Space, Table, Tag, Tooltip } from 'antd';
+import { DeleteOutlined, EditOutlined, FileTextOutlined, LinkOutlined, DisconnectOutlined, MoreOutlined } from '@ant-design/icons';
+import { Avatar, Button, Dropdown, Popconfirm, Space, Table, Tag, Tooltip, Typography } from 'antd';
 import dayjs from 'dayjs';
 
 const statusColor = {
@@ -7,6 +7,39 @@ const statusColor = {
   connecting: 'blue',
   disconnected: 'default',
   error: 'red',
+};
+
+const statusText = {
+  connected: '已连接',
+  connecting: '连接中',
+  disconnected: '未连接',
+  error: '异常',
+};
+
+const healthColor = {
+  healthy: 'green',
+  unhealthy: 'red',
+  unknown: 'default',
+  unchecked: 'default',
+  unauthorized: 'orange',
+  restricted: 'red',
+  listener_error: 'orange',
+};
+
+const healthText = {
+  healthy: '健康',
+  unhealthy: '异常',
+  unknown: '未知',
+  unchecked: '未检查',
+  unauthorized: '未授权',
+  restricted: '受限',
+  listener_error: '监听异常',
+};
+
+const resolveAvatar = (avatar) => {
+  if (!avatar) return undefined;
+  if (/^https?:\/\//.test(avatar)) return avatar;
+  return avatar;
 };
 
 export default function SessionList({
@@ -18,20 +51,48 @@ export default function SessionList({
   onConnect,
   onDisconnect,
   onDelete,
+  onTaskLogs,
 }) {
   const columns = [
     {
+      title: '序号',
+      key: 'sequence',
+      width: 80,
+      render: (_, __, index) => index + 1,
+    },
+    {
       title: '用户',
       dataIndex: 'username',
+      width: 240,
       render: (value, record) => (
         <Space>
-          <Avatar src={record.avatar}>{value?.[0]?.toUpperCase()}</Avatar>
-          <span>{value}</span>
+          <Avatar src={resolveAvatar(record.avatar)}>{value?.[0]?.toUpperCase()}</Avatar>
+          <Space direction="vertical" size={0}>
+            <Typography.Text strong>{value || '-'}</Typography.Text>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>{record.session_name}</Typography.Text>
+          </Space>
         </Space>
       ),
     },
     { title: '手机号', dataIndex: 'phone', width: 150 },
-    { title: '分组', dataIndex: 'group_name', width: 140, render: (value) => value || '-' },
+    {
+      title: '分组',
+      dataIndex: 'group_name',
+      width: 140,
+      render: (value, record) => (value ? <Tag color={record.group_color || 'blue'}>{value}</Tag> : <Tag>未分组</Tag>),
+    },
+    {
+      title: '客服状态',
+      dataIndex: 'kf_name',
+      width: 140,
+      render: (value, record) => (value ? <Tag color={record.kf_color || 'blue'}>{value}</Tag> : <Tag>未绑定</Tag>),
+    },
+    {
+      title: '代理',
+      dataIndex: 'proxy_name',
+      width: 140,
+      render: (value, record) => (value ? <Tag color={record.proxy_status === 'unreachable' ? 'red' : record.proxy_color || 'blue'}>{value}</Tag> : <Tag>未分配</Tag>),
+    },
     {
       title: '登录时间',
       dataIndex: 'last_login_at',
@@ -42,18 +103,24 @@ export default function SessionList({
       title: '连接状态',
       dataIndex: 'status',
       width: 120,
-      render: (value) => <Tag color={statusColor[value]}>{value}</Tag>,
+      render: (value) => <Tag color={statusColor[value]}>{statusText[value] || value || '-'}</Tag>,
     },
     {
       title: '健康',
       dataIndex: 'health_status',
       width: 120,
-      render: (value) => value || '-',
+      render: (value) => <Tag color={healthColor[value]}>{healthText[value] || value || '-'}</Tag>,
+    },
+    {
+      title: '已发送数量',
+      dataIndex: 'sent_count',
+      width: 120,
+      render: (value) => value || 0,
     },
     {
       title: '操作',
       key: 'actions',
-      width: 210,
+      width: 260,
       fixed: 'right',
       render: (_, record) => (
         <Space>
@@ -69,12 +136,19 @@ export default function SessionList({
           <Tooltip title="编辑">
             <Button icon={<EditOutlined />} onClick={() => onEdit(record)} />
           </Tooltip>
+          <Tooltip title="任务日志">
+            <Button icon={<FileTextOutlined />} onClick={() => onTaskLogs(record)} />
+          </Tooltip>
           <Popconfirm title="确认删除该Session？" onConfirm={() => onDelete(record)}>
-            <Button danger icon={<DeleteOutlined />} />
+            <Tooltip title="删除">
+              <Button danger icon={<DeleteOutlined />} />
+            </Tooltip>
           </Popconfirm>
-          <Dropdown menu={{ items: [{ key: 'reserved', label: '扩展接口预留', disabled: true }] }}>
-            <Button icon={<MoreOutlined />} />
-          </Dropdown>
+          <Tooltip title="更多">
+            <Dropdown menu={{ items: [{ key: 'reserved', label: '扩展接口预留', disabled: true }] }}>
+              <Button icon={<MoreOutlined />} />
+            </Dropdown>
+          </Tooltip>
         </Space>
       ),
     },
@@ -88,7 +162,7 @@ export default function SessionList({
       loading={loading}
       rowSelection={{ selectedRowKeys, onChange: onSelectionChange }}
       pagination={{ pageSize: 20, showSizeChanger: true }}
-      scroll={{ x: 1100 }}
+      scroll={{ x: 1670 }}
     />
   );
 }

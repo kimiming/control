@@ -10,6 +10,35 @@ export const api = axios.create({
   timeout: 30000,
 });
 
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem('auth_token');
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error?.response?.status === 401) {
+      localStorage.removeItem('auth_token');
+      localStorage.removeItem('auth_user');
+      if (window.location.pathname !== '/login') {
+        window.location.href = '/login';
+      }
+    }
+    return Promise.reject(error);
+  },
+);
+
+export const login = (data) => api.post('/auth/login', data).then((res) => res.data);
+export const getMe = () => api.get('/auth/me').then((res) => res.data);
+export const getUsers = () => api.get('/auth/users').then((res) => res.data);
+export const createUser = (data) => api.post('/auth/users', data).then((res) => res.data);
+export const updateUser = (id, data) => api.put(`/auth/users/${id}`, data).then((res) => res.data);
+export const changePassword = (data) => api.post('/auth/change-password', data).then((res) => res.data);
+
 export const getSessions = (params) => api.get('/sessions', { params }).then((res) => res.data);
 export const createSession = (data) => api.post('/sessions', data).then((res) => res.data);
 export const updateSession = (id, data) => api.put(`/sessions/${id}`, data).then((res) => res.data);
@@ -22,6 +51,38 @@ export const importSessions = (file) => {
 export const getGroups = () => api.get('/sessions/groups').then((res) => res.data);
 export const createGroup = (data) => api.post('/sessions/groups', data).then((res) => res.data);
 export const moveSessions = (data) => api.post('/sessions/move', data).then((res) => res.data);
+export const moveSessionsToAgent = (data) => api.post('/sessions/move-agent', data).then((res) => res.data);
+export const moveSessionsToProxy = (data) => api.post('/sessions/move-proxy', data).then((res) => res.data);
 export const runHealthCheck = () => api.post('/sessions/health-check').then((res) => res.data);
 export const getSessionLogs = (params) => api.get('/sessions/logs', { params }).then((res) => res.data);
+export const getSessionTaskLogs = (id, params) => api.get(`/sessions/${id}/task-logs`, { params }).then((res) => res.data);
 export const getMessages = (params) => api.get('/messages', { params }).then((res) => res.data);
+export const getTasks = () => api.get('/tasks').then((res) => res.data);
+export const getTask = (id) => api.get(`/tasks/${id}`).then((res) => res.data);
+export const createTask = (data) => api.post('/tasks', data).then((res) => res.data);
+export const updateTask = (id, data) => api.put(`/tasks/${id}`, data).then((res) => res.data);
+export const deleteTask = (id) => api.delete(`/tasks/${id}`).then((res) => res.data);
+export const executeTask = (id) => api.post(`/tasks/${id}/execute`, null, { timeout: 0 }).then((res) => res.data);
+export const getMaterials = (params) => api.get('/materials', { params }).then((res) => res.data);
+export const createMaterial = (data) => api.post('/materials', data).then((res) => res.data);
+export const updateMaterial = (id, data) => api.put(`/materials/${id}`, data).then((res) => res.data);
+export const deleteMaterial = (id) => api.delete(`/materials/${id}`).then((res) => res.data);
+export const batchDeleteMaterials = (ids) => api.post('/materials/batch-delete', { ids }).then((res) => res.data);
+export const getCustomers = (params) => api.get('/customers', { params }).then((res) => res.data);
+export const getCustomerMessages = (id, params) => api.get(`/customers/${id}/messages`, { params }).then((res) => res.data);
+export const replyCustomer = (id, data) => api.post(`/customers/${id}/reply`, typeof data === 'string' ? { text: data } : data).then((res) => res.data);
+export const getCustomerProfiles = () => api.get('/customer-profiles').then((res) => res.data);
+export const getCustomerProfile = (id) => api.get(`/customer-profiles/${id}`).then((res) => res.data);
+export const createCustomerProfile = (data) => api.post('/customer-profiles', data).then((res) => res.data);
+export const updateCustomerProfile = (id, data) => api.put(`/customer-profiles/${id}`, data).then((res) => res.data);
+export const deleteCustomerProfile = (id) => api.delete(`/customer-profiles/${id}`).then((res) => res.data);
+export const getSupportAgents = () => api.get('/support-agents').then((res) => res.data);
+export const createSupportAgent = (data) => api.post('/support-agents', data).then((res) => res.data);
+export const updateSupportAgent = (id, data) => api.put(`/support-agents/${id}`, data).then((res) => res.data);
+export const deleteSupportAgent = (id) => api.delete(`/support-agents/${id}`).then((res) => res.data);
+export const getProxies = () => api.get('/proxies').then((res) => res.data);
+export const createProxy = (data) => api.post('/proxies', data).then((res) => res.data);
+export const updateProxy = (id, data) => api.put(`/proxies/${id}`, data).then((res) => res.data);
+export const deleteProxy = (id) => api.delete(`/proxies/${id}`).then((res) => res.data);
+export const activateProxy = (id) => api.post(`/proxies/${id}/activate`).then((res) => res.data);
+export const testProxy = (id) => api.post(`/proxies/${id}/test`).then((res) => res.data);

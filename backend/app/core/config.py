@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     telegram_api_id: int = 0
     telegram_api_hash: str = ""
+    telegram_proxy_url: str | None = None
     session_dir: str = "./telegram_sessions"
     cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
     health_check_interval_seconds: int = 60

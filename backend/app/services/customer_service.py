@@ -1,0 +1,325 @@
+import asyncio
+import json
+import random
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+from sqlalchemy import func, or_, select, update
+from sqlalchemy.orm import Session
+from telethon.tl.functions.messages import SendMediaRequest
+from telethon.tl.functions.contacts import ImportContactsRequest
+from telethon.tl.types import InputMediaContact, InputPeerUser, InputPhoneContact
+
+from app.core.telegram import build_client
+from app.models.customer import Customer
+from app.models.material import Material
+from app.models.message import Message
+from app.models.session import SessionStatus, TelegramSession
+from app.models.support_agent import SupportAgent
+from app.services.material_service import material_service
+from app.services.proxy_service import proxy_service
+
+
+class CustomerService:
+    def list_customers(self, db: Session, kf_id: int | None = None, keyword: str | None = None, owner_id: int | None = None) -> list[dict[str, Any]]:
+        stmt = (
+            select(Customer, TelegramSession, SupportAgent)
+            .join(TelegramSession, Customer.assigned_session_id == TelegramSession.id, isouter=True)
+            .join(SupportAgent, TelegramSession.kf_id == SupportAgent.id, isouter=True)
+            .where(Customer.send_status != "unknown")
+        )
+        if owner_id is not None:
+            stmt = stmt.where(Customer.owner_id == owner_id)
+        if kf_id is not None:
+            stmt = stmt.where(TelegramSession.kf_id == kf_id)
+        if keyword:
+            like = f"%{keyword}%"
+            stmt = stmt.where(or_(Customer.phone_number.like(like), Customer.nickname.like(like), Customer.tg_id.like(like)))
+        stmt = stmt.order_by(Customer.last_message_at.is_(None), Customer.last_message_at.desc(), Customer.updated_at.desc())
+        return [self.serialize_customer(db, customer, session, agent) for customer, session, agent in db.execute(stmt).all()]
+
+    def get_customer(self, db: Session, customer_id: int, owner_id: int | None = None) -> Customer:
+        customer = db.get(Customer, customer_id)
+        if not customer or (owner_id is not None and customer.owner_id != owner_id):
+            raise ValueError("Customer not found")
+        return customer
+
+    async def list_messages(self, db: Session, customer_id: int, limit: int = 100, owner_id: int | None = None) -> list[Message]:
+        customer = self.get_customer(db, customer_id, owner_id)
+        chat_key = customer.tg_id or customer.phone_number
+        stmt = (
+            select(Message)
+            .where(Message.session_id == customer.assigned_session_id, Message.chat_id == chat_key)
+            .order_by(Message.created_at.asc())
+            .limit(limit)
+        )
+        messages = list(db.scalars(stmt).all())
+        has_unread = any(item.direction == "inbound" and item.read_status == "unread" for item in messages)
+        db.execute(
+            update(Message)
+            .where(
+                Message.session_id == customer.assigned_session_id,
+                Message.chat_id == chat_key,
+                Message.direction == "inbound",
+                Message.read_status == "unread",
+            )
+            .values(read_status="read")
+        )
+        db.commit()
+        if has_unread:
+            session = db.get(TelegramSession, customer.assigned_session_id) if customer.assigned_session_id else None
+            if session and session.status == SessionStatus.connected:
+                await self._acknowledge_customer_read(session, customer, proxy_service.get_proxy_url_for_session(db, session))
+        return messages
+
+    async def reply(self, db: Session, customer_id: int, text: str | None = None, material_id: int | None = None, owner_id: int | None = None) -> Customer:
+        text = (text or "").strip()
+        if not text and not material_id:
+            raise ValueError("Reply text or material is required")
+        customer = self.get_customer(db, customer_id, owner_id)
+        if not customer.assigned_session_id:
+            raise ValueError("Customer is not assigned to a session")
+        session = db.get(TelegramSession, customer.assigned_session_id)
+        if not session or session.status != SessionStatus.connected:
+            raise ValueError("Assigned session is not connected")
+
+        material = material_service.get_material(db, material_id, owner_id) if material_id else None
+        content, image_path = await self._send_reply(session, customer, text, material, proxy_service.get_proxy_url_for_session(db, session))
+        chat_key = customer.tg_id or customer.phone_number
+        db.add(Message(session_id=session.id, chat_id=chat_key, sender=session.username, content=content, image_path=image_path, direction="outbound", read_status="read"))
+        customer.reply_status = "replied"
+        customer.last_message_at = datetime.utcnow()
+        db.commit()
+        db.refresh(customer)
+        return customer
+
+    def upsert_customer_from_task(
+        self,
+        db: Session,
+        phone: str,
+        session: TelegramSession,
+        tg_id: str | None = None,
+        nickname: str | None = None,
+        access_hash: str | None = None,
+        owner_id: int | None = None,
+    ) -> Customer:
+        customer = db.scalar(
+            select(Customer).where(Customer.phone_number == phone, Customer.assigned_session_id == session.id, Customer.owner_id == owner_id)
+        )
+        if not customer:
+            customer = Customer(owner_id=owner_id, phone_number=phone, assigned_session_id=session.id)
+            db.add(customer)
+        customer.kf_id = session.kf_id
+        customer.tg_id = tg_id or customer.tg_id
+        customer.access_hash = access_hash or customer.access_hash
+        customer.nickname = nickname or customer.nickname or phone
+        customer.send_status = "success"
+        customer.last_message_at = datetime.utcnow()
+        db.flush()
+        return customer
+
+    def unread_count(self, db: Session, customer: Customer) -> int:
+        chat_key = customer.tg_id or customer.phone_number
+        return db.scalar(
+            select(func.count(Message.id)).where(
+                Message.session_id == customer.assigned_session_id,
+                Message.chat_id == chat_key,
+                Message.direction == "inbound",
+                Message.read_status == "unread",
+            )
+        ) or 0
+
+    def serialize_customer(
+        self,
+        db: Session,
+        customer: Customer,
+        session: TelegramSession | None = None,
+        support_agent: SupportAgent | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "id": customer.id,
+            "phone_number": customer.phone_number,
+            "tg_id": customer.tg_id,
+            "nickname": customer.nickname,
+            "avatar": customer.avatar,
+            "assigned_session_id": customer.assigned_session_id,
+            "assigned_session_name": session.session_name if session else None,
+            "assigned_session_status": session.status.value if session and hasattr(session.status, "value") else (session.status if session else None),
+            "kf_id": customer.kf_id,
+            "kf_name": support_agent.name if support_agent else None,
+            "send_status": customer.send_status,
+            "reply_status": customer.reply_status,
+            "unread_count": self.unread_count(db, customer),
+            "remark": customer.remark,
+            "last_message_at": customer.last_message_at.isoformat() if customer.last_message_at else None,
+            "created_at": customer.created_at.isoformat() if customer.created_at else None,
+            "updated_at": customer.updated_at.isoformat() if customer.updated_at else None,
+        }
+
+    def serialize_message(self, message: Message) -> dict[str, Any]:
+        return {
+            "id": message.id,
+            "session_id": message.session_id,
+            "chat_id": message.chat_id,
+            "telegram_message_id": message.telegram_message_id,
+            "sender": message.sender,
+            "content": message.content,
+            "image_path": message.image_path,
+            "direction": message.direction,
+            "read_status": message.read_status,
+            "created_at": message.created_at.isoformat(),
+        }
+
+    async def _send_reply(
+        self,
+        session: TelegramSession,
+        customer: Customer,
+        text: str,
+        material: Material | None,
+        proxy_url: str | None,
+    ) -> tuple[str, str | None]:
+        from app.services.incoming_listener import incoming_message_listener
+
+        await incoming_message_listener.pause_session(session.id)
+        client = build_client(session.session_name, proxy_url)
+        try:
+            await asyncio.wait_for(client.connect(), timeout=10)
+            if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
+                raise RuntimeError("Session is not authorized")
+            entity = await self._resolve_customer_entity(client, customer)
+            await self._send_read_acknowledge(client, entity)
+            content, image_path = await self._send_reply_payload(client, entity, text, material)
+            return content, image_path
+        finally:
+            if client.is_connected():
+                await client.disconnect()
+            await incoming_message_listener.resume_session(session.id)
+
+    async def _acknowledge_customer_read(self, session: TelegramSession, customer: Customer, proxy_url: str | None) -> None:
+        from app.services.incoming_listener import incoming_message_listener
+
+        await incoming_message_listener.pause_session(session.id)
+        client = build_client(session.session_name, proxy_url)
+        try:
+            await asyncio.wait_for(client.connect(), timeout=10)
+            if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
+                return
+            entity = await self._resolve_customer_entity(client, customer)
+            await self._send_read_acknowledge(client, entity)
+        except Exception:
+            return
+        finally:
+            if client.is_connected():
+                await client.disconnect()
+            await incoming_message_listener.resume_session(session.id)
+
+    async def _send_read_acknowledge(self, client: Any, entity: Any) -> None:
+        try:
+            await asyncio.wait_for(client.send_read_acknowledge(entity), timeout=15)
+        except Exception:
+            pass
+
+    async def _send_reply_payload(self, client: Any, entity: Any, text: str, material: Material | None) -> tuple[str, str | None]:
+        if not material:
+            await asyncio.wait_for(client.send_message(entity, text), timeout=30)
+            return text, None
+
+        if material.material_type == "text":
+            content = (material.content or text or "").strip()
+            if not content:
+                raise ValueError("Selected text material is empty")
+            await asyncio.wait_for(client.send_message(entity, content), timeout=30)
+            return content, None
+
+        if material.material_type == "image":
+            if not material.file_path:
+                raise ValueError("Selected image material has no file")
+            file_path = self._local_static_path(material.file_path)
+            await asyncio.wait_for(client.send_file(entity, file_path, caption=text or ""), timeout=60)
+            return text or f"图片素材：{material.name}", material.file_path
+
+        if material.material_type == "contact":
+            content = self._contact_card_message(material.content)
+            await self._send_contact_card(client, entity, material.content)
+            if text:
+                await asyncio.wait_for(client.send_message(entity, text), timeout=30)
+                content = f"{content}\n{text}".strip()
+            return content, None
+
+        raise ValueError("Unsupported material type")
+
+    def _local_static_path(self, value: str) -> str:
+        if value.startswith("/static/"):
+            return str(Path("static") / value.removeprefix("/static/"))
+        return value
+
+    async def _send_contact_card(self, client: Any, entity: Any, contact_card: str | None) -> None:
+        card = self._load_contact_card(contact_card)
+        phone_number = (card.get("phone_number") or "").strip()
+        first_name = (card.get("first_name") or "").strip()
+        last_name = (card.get("last_name") or "").strip()
+        if not phone_number or not first_name:
+            raise ValueError("Contact card phone number and first name are required")
+        media = InputMediaContact(
+            phone_number=phone_number,
+            first_name=first_name,
+            last_name=last_name,
+            vcard=card.get("vcard") or "",
+        )
+        await asyncio.wait_for(
+            client(
+                SendMediaRequest(
+                    peer=entity,
+                    media=media,
+                    message="",
+                    random_id=random.getrandbits(63),
+                )
+            ),
+            timeout=30,
+        )
+
+    def _load_contact_card(self, value: str | None) -> dict[str, str]:
+        if not value:
+            return {}
+        try:
+            data = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return {
+            "phone_number": str(data.get("phone_number") or ""),
+            "first_name": str(data.get("first_name") or ""),
+            "last_name": str(data.get("last_name") or ""),
+            "vcard": str(data.get("vcard") or ""),
+        }
+
+    def _contact_card_message(self, value: str | None) -> str:
+        card = self._load_contact_card(value)
+        name = " ".join(part for part in [card.get("first_name"), card.get("last_name")] if part)
+        return f"名片：{name or '-'} {card.get('phone_number') or ''}".strip()
+
+    async def _resolve_customer_entity(self, client: Any, customer: Customer) -> Any:
+        candidates: list[Any] = []
+        if customer.tg_id and customer.access_hash:
+            try:
+                candidates.append(InputPeerUser(int(customer.tg_id), int(customer.access_hash)))
+            except ValueError:
+                pass
+        if customer.tg_id:
+            candidates.append(int(customer.tg_id) if customer.tg_id.isdigit() else customer.tg_id)
+        candidates.append(customer.phone_number)
+
+        for candidate in candidates:
+            try:
+                return await asyncio.wait_for(client.get_entity(candidate), timeout=10)
+            except Exception:
+                continue
+
+        contact = InputPhoneContact(client_id=0, phone=customer.phone_number, first_name=customer.phone_number, last_name="")
+        result = await asyncio.wait_for(client(ImportContactsRequest([contact])), timeout=15)
+        if not result.users:
+            raise RuntimeError("Customer is not available on Telegram")
+        return result.users[0]
+
+
+customer_service = CustomerService()
