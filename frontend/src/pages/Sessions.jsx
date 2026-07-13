@@ -7,6 +7,7 @@ import {
   WS_BASE_URL,
   createGroup,
   createSession,
+  connectSessions,
   deleteSession,
   disconnectSessions,
   getGroups,
@@ -153,21 +154,16 @@ export default function Sessions() {
   });
 
   const batchConnectMutation = useMutation({
-    mutationFn: async () => {
-      const results = await Promise.allSettled(selectedRowKeys.map((id) => updateSession(id, { action: 'connect' })));
-      const failed = results.filter((result) => result.status === 'rejected');
-      if (failed.length) {
-        throw new Error(`连接失败 ${failed.length} 个，成功 ${results.length - failed.length} 个`);
-      }
-      return results.length;
-    },
-    onSuccess: (count) => {
-      message.success(`已提交 ${count} 个Session连接`);
+    mutationFn: () => connectSessions(selectedRowKeys),
+    onSuccess: (data) => {
+      const notice = `批量连接完成：成功 ${data.connected} 个，跳过已连接/连接中 ${data.skipped} 个，失败 ${data.failed} 个`;
+      if (data.failed) message.warning(notice, 8);
+      else message.success(notice, 6);
       queryClient.invalidateQueries({ queryKey: ['sessions'] });
       setSelectedRowKeys([]);
     },
     onError: (error) => {
-      message.error(error.message || '批量连接失败');
+      message.error(error?.response?.data?.detail || error.message || '批量连接失败');
       queryClient.invalidateQueries({ queryKey: ['sessions'] });
     },
   });

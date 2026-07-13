@@ -99,8 +99,8 @@ class SessionService:
         return session
 
     async def connect_session(self, db: Session, session: TelegramSession) -> TelegramSession:
-        if session.status == SessionStatus.connected:
-            self.log(db, session.id, "connect_skipped", "Session is already connected")
+        if session.status in {SessionStatus.connected, SessionStatus.connecting}:
+            self.log(db, session.id, "connect_skipped", f"Session is already {session.status.value}")
             db.commit()
             db.refresh(session)
             return session
@@ -134,6 +134,34 @@ class SessionService:
         db.refresh(session)
         await self.publish_status(session, "status_changed")
         return session
+
+    async def connect_sessions(
+        self,
+        db: Session,
+        session_ids: list[int],
+        owner_id: int | None = None,
+    ) -> dict[str, int]:
+        sessions = self.get_sessions_by_ids(db, session_ids, owner_id)
+        summary = {
+            "requested": len(dict.fromkeys(session_ids)),
+            "found": len(sessions),
+            "connected": 0,
+            "skipped": 0,
+            "failed": 0,
+        }
+        for session in sessions:
+            db.refresh(session)
+            if session.status in {SessionStatus.connected, SessionStatus.connecting}:
+                summary["skipped"] += 1
+                self.log(db, session.id, "batch_connect_skipped", f"Session is already {session.status.value}")
+                db.commit()
+                continue
+            result = await self.connect_session(db, session)
+            if result.status == SessionStatus.connected:
+                summary["connected"] += 1
+            else:
+                summary["failed"] += 1
+        return summary
 
     async def disconnect_session(self, db: Session, session: TelegramSession) -> TelegramSession:
         session.status = SessionStatus.disconnected

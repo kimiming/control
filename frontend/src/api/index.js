@@ -54,6 +54,7 @@ export const moveSessions = (data) => api.post('/sessions/move', data).then((res
 export const moveSessionsToAgent = (data) => api.post('/sessions/move-agent', data).then((res) => res.data);
 export const moveSessionsToProxy = (data) => api.post('/sessions/move-proxy', data).then((res) => res.data);
 export const disconnectSessions = (sessionIds) => api.post('/sessions/disconnect', { session_ids: sessionIds }).then((res) => res.data);
+export const connectSessions = (sessionIds) => api.post('/sessions/connect', { session_ids: sessionIds }, { timeout: 0 }).then((res) => res.data);
 export const runHealthCheck = () => api.post('/sessions/health-check').then((res) => res.data);
 export const checkSessionBidirectional = (id) => api.post(`/sessions/${id}/bidirectional-check`, null, { timeout: 60000 }).then((res) => res.data);
 export const checkAllSessionsBidirectional = () => api.post('/sessions/bidirectional-check', null, { timeout: 0 }).then((res) => res.data);

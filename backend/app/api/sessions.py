@@ -107,6 +107,11 @@ async def disconnect_sessions(payload: SessionIds, db: Session = Depends(get_db)
     return {"disconnected": disconnected}
 
 
+@router.post("/connect")
+async def connect_sessions(payload: SessionIds, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, int]:
+    return await session_service.connect_sessions(db, payload.session_ids, user.id)
+
+
 @router.post("/health-check")
 async def health_check(db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, int]:
     return await session_service.health_check_once(db, user.id)
