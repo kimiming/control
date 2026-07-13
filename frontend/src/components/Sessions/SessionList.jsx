@@ -1,4 +1,4 @@
-import { DeleteOutlined, EditOutlined, FileTextOutlined, LinkOutlined, DisconnectOutlined, MoreOutlined } from '@ant-design/icons';
+import { DeleteOutlined, EditOutlined, FileTextOutlined, LinkOutlined, DisconnectOutlined, MoreOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
 import { Avatar, Button, Dropdown, Popconfirm, Space, Table, Tag, Tooltip, Typography } from 'antd';
 import dayjs from 'dayjs';
 
@@ -36,6 +36,26 @@ const healthText = {
   listener_error: '监听异常',
 };
 
+const bidirectionalColor = {
+  unchecked: 'default',
+  checking: 'processing',
+  normal: 'green',
+  restricted: 'red',
+  timeout: 'orange',
+  unauthorized: 'gold',
+  error: 'red',
+};
+
+const bidirectionalText = {
+  unchecked: '未检测',
+  checking: '检测中',
+  normal: '正常（非双向号）',
+  restricted: '疑似双向号',
+  timeout: '检测超时',
+  unauthorized: '未授权',
+  error: '检测异常',
+};
+
 const resolveAvatar = (avatar) => {
   if (!avatar) return undefined;
   if (/^https?:\/\//.test(avatar)) return avatar;
@@ -52,6 +72,8 @@ export default function SessionList({
   onDisconnect,
   onDelete,
   onTaskLogs,
+  onBidirectionalCheck,
+  checkingSessionId,
 }) {
   const columns = [
     {
@@ -112,6 +134,23 @@ export default function SessionList({
       render: (value) => <Tag color={healthColor[value]}>{healthText[value] || value || '-'}</Tag>,
     },
     {
+      title: '双向号状态',
+      dataIndex: 'bidirectional_status',
+      width: 160,
+      render: (value = 'unchecked', record) => (
+        <Tooltip
+          title={(
+            <div>
+              <div>{record.bidirectional_detail || '尚未进行双向号检测'}</div>
+              {record.last_bidirectional_check_at ? <div>检测时间：{dayjs(record.last_bidirectional_check_at).format('YYYY-MM-DD HH:mm:ss')}</div> : null}
+            </div>
+          )}
+        >
+          <Tag color={bidirectionalColor[value] || 'default'}>{bidirectionalText[value] || value}</Tag>
+        </Tooltip>
+      ),
+    },
+    {
       title: '已发送数量',
       dataIndex: 'sent_count',
       width: 120,
@@ -139,6 +178,14 @@ export default function SessionList({
           <Tooltip title="任务日志">
             <Button icon={<FileTextOutlined />} onClick={() => onTaskLogs(record)} />
           </Tooltip>
+          <Tooltip title="双向号测试">
+            <Button
+              icon={<SafetyCertificateOutlined />}
+              loading={checkingSessionId === record.id || record.bidirectional_status === 'checking'}
+              disabled={checkingSessionId != null && checkingSessionId !== record.id}
+              onClick={() => onBidirectionalCheck(record)}
+            />
+          </Tooltip>
           <Popconfirm title="确认删除该Session？" onConfirm={() => onDelete(record)}>
             <Tooltip title="删除">
               <Button danger icon={<DeleteOutlined />} />
@@ -162,7 +209,7 @@ export default function SessionList({
       loading={loading}
       rowSelection={{ selectedRowKeys, onChange: onSelectionChange }}
       pagination={{ pageSize: 20, showSizeChanger: true }}
-      scroll={{ x: 1670 }}
+      scroll={{ x: 1830 }}
     />
   );
 }

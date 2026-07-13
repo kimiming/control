@@ -35,6 +35,8 @@ async def create_task(
     content_material_id: int | None = Form(None),
     image_material_id: int | None = Form(None),
     contact_material_id: int | None = Form(None),
+    send_type: str = Form("single"),
+    material_group_id: int | None = Form(None),
     customer_profile_id: int | None = Form(None),
     targets_file: UploadFile | None = File(None),
     image: UploadFile | None = File(None),
@@ -54,6 +56,8 @@ async def create_task(
             image_material_id,
             contact_material_id,
             customer_profile_id,
+            send_type,
+            material_group_id,
             owner_id=user.id,
         )
     except ValueError as exc:
@@ -71,6 +75,8 @@ async def update_task(
     content_material_id: int | None = Form(None),
     image_material_id: int | None = Form(None),
     contact_material_id: int | None = Form(None),
+    send_type: str = Form("single"),
+    material_group_id: int | None = Form(None),
     customer_profile_id: int | None = Form(None),
     targets_file: UploadFile | None = File(None),
     image: UploadFile | None = File(None),
@@ -91,12 +97,27 @@ async def update_task(
             image_material_id,
             contact_material_id,
             customer_profile_id,
+            send_type,
+            material_group_id,
             owner_id=user.id,
         )
     except ValueError as exc:
         status_code = 404 if str(exc) == "Task not found" else 400
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc
     return task_service.serialize_task(task)
+
+
+@router.get("/{task_id}/logs")
+def list_task_logs(
+    task_id: int,
+    limit: int = 500,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> list[dict[str, Any]]:
+    try:
+        return task_service.list_task_logs(db, task_id, limit, user.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.delete("/{task_id}")

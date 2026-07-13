@@ -234,6 +234,46 @@ body {
   margin-bottom: 4px !important;
 }
 
+.customer-card-title,
+.chat-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.customer-card-title > .ant-space {
+  min-width: 0;
+}
+
+.favorite-button {
+  flex: 0 0 auto;
+  color: #98a2b3;
+}
+
+.favorite-button.active {
+  color: #f5a623;
+  border-color: #ffd591;
+  background: #fffbe6;
+}
+
+.chat-list-tabs .ant-tabs-nav {
+  margin: 2px 0 0 !important;
+}
+
+.chat-list-tabs .ant-tabs-nav-list {
+  width: 100%;
+}
+
+.chat-list-tabs .ant-tabs-tab {
+  flex: 1;
+  justify-content: center;
+}
+
+.chat-list-tabs .ant-tabs-content-holder {
+  display: none;
+}
+
 .chat-panel {
   display: flex;
   flex-direction: column;
@@ -280,6 +320,29 @@ body {
   margin-top: 4px;
   color: #667085;
   font-size: 12px;
+}
+
+.chat-message-meta {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+}
+
+.chat-message-meta > span {
+  display: inline-block;
+}
+
+.message-checks {
+  color: #667085 !important;
+  font-size: 14px !important;
+  font-weight: 700;
+  letter-spacing: -3px;
+  padding-right: 3px;
+}
+
+.message-checks.read {
+  color: #1677ff !important;
 }
 
 .chat-composer {

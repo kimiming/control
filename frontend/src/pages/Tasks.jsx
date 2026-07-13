@@ -1,4 +1,4 @@
-import { DeleteOutlined, EditOutlined, EyeOutlined, PlayCircleOutlined, PlusOutlined } from '@ant-design/icons';
+import { DeleteOutlined, EditOutlined, EyeOutlined, FileTextOutlined, PlayCircleOutlined, PlusOutlined } from '@ant-design/icons';
 import {
   Button,
   Descriptions,
@@ -16,6 +16,7 @@ import {
   Table,
   Tag,
   Tooltip,
+  Typography,
   Upload,
   message,
 } from 'antd';
@@ -23,7 +24,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import dayjs from 'dayjs';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
-import { createTask, deleteTask, executeTask, getCustomerProfiles, getGroups, getMaterials, getTasks, updateTask } from '../api/index.js';
+import { createTask, deleteTask, executeTask, getCustomerProfiles, getGroups, getMaterialGroups, getMaterials, getTaskLogs, getTasks, updateTask } from '../api/index.js';
 
 const statusColor = {
   draft: 'default',
@@ -44,27 +45,30 @@ const statusText = {
 const buildTaskFormData = (values) => {
   const formData = new FormData();
   formData.append('name', values.name);
-  if (values.content_mode !== 'material') {
+  formData.append('send_type', values.send_type || 'single');
+  if (values.send_type === 'group') {
+    if (values.material_group_id) formData.append('material_group_id', values.material_group_id);
+  } else if (values.content_mode !== 'material') {
     formData.append('content', values.content || '');
   }
   if (values.session_group_id !== undefined && values.session_group_id !== null) {
     formData.append('session_group_id', values.session_group_id);
   }
   formData.append('messages_per_target', values.messages_per_target ?? 3);
-  if (values.content_mode === 'material' && values.content_material_id) {
+  if (values.send_type !== 'group' && values.content_mode === 'material' && values.content_material_id) {
     formData.append('content_material_id', values.content_material_id);
   }
-  if (values.image_mode === 'material' && values.image_material_id) {
+  if (values.send_type !== 'group' && values.image_mode === 'material' && values.image_material_id) {
     formData.append('image_material_id', values.image_material_id);
   }
-  if (values.contact_material_id) {
+  if (values.send_type !== 'group' && values.contact_material_id) {
     formData.append('contact_material_id', values.contact_material_id);
   }
   if (values.targets_mode === 'profile' && values.customer_profile_id) {
     formData.append('customer_profile_id', values.customer_profile_id);
   }
 
-  const imageFile = values.image?.[0]?.originFileObj;
+  const imageFile = values.send_type === 'group' ? null : values.image?.[0]?.originFileObj;
   const targetsFile = values.targets_mode === 'profile' ? null : values.targets_file?.[0]?.originFileObj;
   if (imageFile) formData.append('image', imageFile);
   if (targetsFile) formData.append('targets_file', targetsFile);
@@ -78,6 +82,7 @@ export default function Tasks() {
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [viewing, setViewing] = useState(null);
+  const [logTask, setLogTask] = useState(null);
   const [executingTaskIds, setExecutingTaskIds] = useState(() => new Set());
   const executingLocksRef = useRef(new Set());
   const [form] = Form.useForm();
@@ -91,13 +96,21 @@ export default function Tasks() {
     },
   });
   const { data: groups = [] } = useQuery({ queryKey: ['session-groups'], queryFn: getGroups });
+  const { data: materialGroups = [] } = useQuery({ queryKey: ['material-groups'], queryFn: getMaterialGroups });
   const { data: textMaterials = [] } = useQuery({ queryKey: ['materials', 'text'], queryFn: () => getMaterials({ material_type: 'text' }) });
   const { data: imageMaterials = [] } = useQuery({ queryKey: ['materials', 'image'], queryFn: () => getMaterials({ material_type: 'image' }) });
   const { data: contactMaterials = [] } = useQuery({ queryKey: ['materials', 'contact'], queryFn: () => getMaterials({ material_type: 'contact' }) });
   const { data: customerProfiles = [] } = useQuery({ queryKey: ['customer-profiles'], queryFn: getCustomerProfiles });
+  const { data: taskLogs = [], isLoading: taskLogsLoading } = useQuery({
+    queryKey: ['task-logs', logTask?.id],
+    queryFn: () => getTaskLogs(logTask.id, { limit: 1000 }),
+    enabled: Boolean(logTask?.id),
+    refetchInterval: logTask?.status === 'running' ? 3000 : false,
+  });
   const contentMode = Form.useWatch('content_mode', form);
   const imageMode = Form.useWatch('image_mode', form);
   const targetsMode = Form.useWatch('targets_mode', form);
+  const sendType = Form.useWatch('send_type', form);
 
   useEffect(() => {
     form.resetFields();
@@ -107,13 +120,15 @@ export default function Tasks() {
         content: editing.content,
         content_mode: 'manual',
         image_mode: 'manual',
+        send_type: editing.send_type || 'single',
+        material_group_id: editing.material_group_id,
         targets_mode: 'manual',
         session_group_id: editing.session_group_id,
         messages_per_target: editing.messages_per_target,
         contact_material_id: editing.contact_card ? '__existing__' : undefined,
       });
     } else {
-      form.setFieldsValue({ messages_per_target: 3, content_mode: 'manual', image_mode: 'manual', targets_mode: 'manual' });
+      form.setFieldsValue({ messages_per_target: 3, send_type: 'single', content_mode: 'manual', image_mode: 'manual', targets_mode: 'manual' });
     }
   }, [editing, form, modalOpen]);
 
@@ -122,6 +137,7 @@ export default function Tasks() {
     groups.forEach((group) => map.set(group.id, group.name));
     return map;
   }, [groups]);
+  const materialGroupNameMap = useMemo(() => new Map(materialGroups.map((group) => [group.id, group.name])), [materialGroups]);
 
   const runningTaskIds = useMemo(
     () => new Set(tasks.filter((item) => item.status === 'running').map((item) => item.id)),
@@ -193,6 +209,7 @@ export default function Tasks() {
     },
     onSuccess: (task) => {
       queryClient.invalidateQueries({ queryKey: ['tasks'] });
+      queryClient.invalidateQueries({ queryKey: ['task-logs', task.id] });
       message.success(`任务执行完成，成功 ${task.sent_count} 条，失败 ${task.failed_count} 条`);
     },
     onError: (error) => message.error(error?.response?.data?.detail || error.message),
@@ -204,6 +221,12 @@ export default function Tasks() {
 
   const columns = [
     { title: '任务名称', dataIndex: 'name', width: 180 },
+    {
+      title: '素材发送类型',
+      dataIndex: 'send_type',
+      width: 140,
+      render: (value, record) => (value === 'group' ? `组合：${materialGroupNameMap.get(record.material_group_id) || '分组已删除'}` : '单项发送'),
+    },
     {
       title: '文字内容',
       dataIndex: 'content',
@@ -250,7 +273,7 @@ export default function Tasks() {
     {
       title: '操作',
       key: 'actions',
-      width: 190,
+      width: 240,
       fixed: 'right',
       render: (_, record) => {
         const locked = isTaskLocked(record.id);
@@ -267,6 +290,9 @@ export default function Tasks() {
             </Tooltip>
             <Tooltip title="查看">
               <Button icon={<EyeOutlined />} onClick={() => setViewing(record)} />
+            </Tooltip>
+            <Tooltip title="发送日志">
+              <Button icon={<FileTextOutlined />} onClick={() => setLogTask(record)} />
             </Tooltip>
             <Tooltip title="编辑">
               <Button icon={<EditOutlined />} onClick={() => { setEditing(record); setModalOpen(true); }} />
@@ -307,15 +333,19 @@ export default function Tasks() {
           form={form}
           layout="vertical"
           onFinish={(values) => {
-            const hasText = values.content_mode === 'material' ? Boolean(values.content_material_id) : Boolean(values.content?.trim());
-            const hasImage = values.image_mode === 'material' ? Boolean(values.image_material_id) : Boolean(values.image?.[0]?.originFileObj || editing?.image_path);
-            const hasContact = Boolean(values.contact_material_id) || Boolean(editing?.contact_card);
-            if (!hasText && !hasImage && !hasContact) {
-              message.error('任务文字、任务图片和名片至少填写一个');
+            if (values.send_type === 'group' && !values.material_group_id) {
+              message.error('请选择素材分组');
               return;
             }
-            if (values.contact_material_id === '__existing__') {
-              values.contact_material_id = undefined;
+            if (values.send_type !== 'group') {
+              const hasText = values.content_mode === 'material' ? Boolean(values.content_material_id) : Boolean(values.content?.trim());
+              const hasImage = values.image_mode === 'material' ? Boolean(values.image_material_id) : Boolean(values.image?.[0]?.originFileObj || editing?.image_path);
+              const hasContact = Boolean(values.contact_material_id) || Boolean(editing?.contact_card);
+              if (!hasText && !hasImage && !hasContact) {
+                message.error('任务文字、任务图片和名片至少填写一个');
+                return;
+              }
+              if (values.contact_material_id === '__existing__') values.contact_material_id = undefined;
             }
             if (values.targets_mode === 'profile' && !values.customer_profile_id) {
               message.error('请选择客户资料');
@@ -327,6 +357,27 @@ export default function Tasks() {
           <Form.Item name="name" label="任务名称" rules={[{ required: true, message: '请输入任务名称' }]}>
             <Input maxLength={150} />
           </Form.Item>
+          <Form.Item name="send_type" label="素材发送类型" rules={[{ required: true }]}>
+            <Radio.Group>
+              <Radio value="single">单项发送</Radio>
+              <Radio value="group">组合发送</Radio>
+            </Radio.Group>
+          </Form.Item>
+          {sendType === 'group' ? (
+            <Form.Item
+              name="material_group_id"
+              label="选择素材分组"
+              extra="每个目标都会发送分组内全部素材；优先级越高越可能先发送，同优先级随机排列。"
+              rules={[{ required: true, message: '请选择素材分组' }]}
+            >
+              <Select
+                showSearch
+                optionFilterProp="label"
+                options={materialGroups.map((group) => ({ value: group.id, label: `${group.name}（${group.material_count}条素材）`, disabled: !group.material_count }))}
+              />
+            </Form.Item>
+          ) : (
+            <>
           <Form.Item name="content_mode" label="任务文字内容来源">
             <Radio.Group>
               <Radio value="manual">手动输入</Radio>
@@ -380,6 +431,8 @@ export default function Tasks() {
               ]}
             />
           </Form.Item>
+            </>
+          )}
           <Form.Item name="session_group_id" label="选择执行任务的Session分类">
             <Select
               allowClear
@@ -425,6 +478,9 @@ export default function Tasks() {
           <Space direction="vertical" size={16} style={{ width: '100%' }}>
             <Descriptions column={1} bordered size="small">
               <Descriptions.Item label="任务名称">{viewing.name}</Descriptions.Item>
+              <Descriptions.Item label="素材发送类型">
+                {viewing.send_type === 'group' ? `组合发送：${materialGroupNameMap.get(viewing.material_group_id) || '分组已删除'}` : '单项发送'}
+              </Descriptions.Item>
               <Descriptions.Item label="Session分类">{viewing.session_group_id ? groupNameMap.get(viewing.session_group_id) || viewing.session_group_id : '全部已连接'}</Descriptions.Item>
               <Descriptions.Item label="每Session条数">{viewing.messages_per_target}</Descriptions.Item>
               <Descriptions.Item label="目标数">{viewing.total_targets}</Descriptions.Item>
@@ -433,18 +489,60 @@ export default function Tasks() {
               <Descriptions.Item label="最后执行">{viewing.last_run_at ? dayjs(viewing.last_run_at).format('YYYY-MM-DD HH:mm:ss') : '-'}</Descriptions.Item>
               <Descriptions.Item label="错误">{viewing.error_message || '-'}</Descriptions.Item>
             </Descriptions>
-            {viewing.image_path ? <Image src={viewing.image_path} width={220} /> : null}
-            {viewing.contact_card ? (
+            {viewing.send_type !== 'group' && viewing.image_path ? <Image src={viewing.image_path} width={220} /> : null}
+            {viewing.send_type !== 'group' && viewing.contact_card ? (
               <Descriptions column={1} bordered size="small">
                 <Descriptions.Item label="名片手机号">{viewing.contact_card.phone_number || '-'}</Descriptions.Item>
                 <Descriptions.Item label="名">{viewing.contact_card.first_name || '-'}</Descriptions.Item>
                 <Descriptions.Item label="姓">{viewing.contact_card.last_name || '-'}</Descriptions.Item>
               </Descriptions>
             ) : null}
-            <Input.TextArea value={viewing.content} rows={5} readOnly />
+            {viewing.send_type !== 'group' ? <Input.TextArea value={viewing.content} rows={5} readOnly /> : null}
             <Input.TextArea value={(viewing.targets || []).join('\n')} rows={8} readOnly />
           </Space>
         ) : null}
+      </Drawer>
+
+      <Drawer
+        title={logTask ? `${logTask.name} - 发送日志` : '发送日志'}
+        open={Boolean(logTask)}
+        onClose={() => setLogTask(null)}
+        width={980}
+      >
+        <Table
+          rowKey="id"
+          loading={taskLogsLoading}
+          dataSource={taskLogs}
+          pagination={{ pageSize: 20, showSizeChanger: true }}
+          scroll={{ x: 900 }}
+          columns={[
+            {
+              title: 'Session号',
+              key: 'session',
+              width: 220,
+              render: (_, log) => (
+                <Space direction="vertical" size={0}>
+                  <Typography.Text strong>{log.session_name || '系统汇总'}</Typography.Text>
+                  <Typography.Text type="secondary">{log.session_phone || '-'}</Typography.Text>
+                </Space>
+              ),
+            },
+            { title: '目标客户', dataIndex: 'target_phone', width: 160 },
+            {
+              title: '发送结果',
+              dataIndex: 'status',
+              width: 110,
+              render: (value) => <Tag color={value === 'success' ? 'green' : 'red'}>{value === 'success' ? '成功' : '失败'}</Tag>,
+            },
+            { title: '发送详情', dataIndex: 'message', ellipsis: true, render: (value) => value || '-' },
+            {
+              title: '发送到达时间',
+              dataIndex: 'sent_at',
+              width: 180,
+              render: (value) => (value ? dayjs(value).format('YYYY-MM-DD HH:mm:ss') : '-'),
+            },
+          ]}
+        />
       </Drawer>
     </div>
   );

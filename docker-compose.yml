@@ -87,8 +87,8 @@ services:
 
 volumes:
   mysql_data:
-    name: tg_marketing_mysql_data
+    name: control_mysql_data
   redis_data:
     name: tg_marketing_redis_data
   telegram_sessions:
-    name: tg_marketing_telegram_sessions
+    name: control_telegram_sessions

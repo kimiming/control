@@ -1,4 +1,4 @@
-import { CheckCircleOutlined, DeleteOutlined, ImportOutlined, LinkOutlined, TeamOutlined } from '@ant-design/icons';
+import { CheckCircleOutlined, DeleteOutlined, ImportOutlined, LinkOutlined, SafetyCertificateOutlined, TeamOutlined } from '@ant-design/icons';
 import { Button, Card, Drawer, Form, Input, Modal, Popconfirm, Radio, Select, Space, Table, Tag, Upload, message } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import dayjs from 'dayjs';
@@ -19,6 +19,8 @@ import {
   moveSessionsToAgent,
   moveSessionsToProxy,
   runHealthCheck,
+  checkSessionBidirectional,
+  checkAllSessionsBidirectional,
   updateSession,
 } from '../api/index.js';
 import SessionList from '../components/Sessions/SessionList.jsx';
@@ -208,6 +210,37 @@ export default function Sessions() {
     onSuccess: (data) => message.success(`已检查 ${data.checked} 个Session`),
   });
 
+  const bidirectionalMutation = useMutation({
+    mutationFn: (record) => checkSessionBidirectional(record.id),
+    onSuccess: (data) => {
+      queryClient.setQueriesData({ queryKey: ['sessions'] }, (old = []) => (
+        Array.isArray(old) ? old.map((item) => (item.id === data.id ? { ...item, ...data } : item)) : old
+      ));
+      const resultText = {
+        normal: '账号正常，不是双向号',
+        restricted: '账号异常，疑似双向号',
+        timeout: '检测超时',
+        unauthorized: 'Session 未授权',
+        error: '检测异常',
+      }[data.bidirectional_status] || data.bidirectional_status;
+      if (data.bidirectional_status === 'normal') message.success(resultText);
+      else message.warning(resultText);
+    },
+    onError: (error) => message.error(error?.response?.data?.detail || error.message || '双向号检测失败'),
+  });
+
+  const batchBidirectionalMutation = useMutation({
+    mutationFn: checkAllSessionsBidirectional,
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['sessions'] });
+      message.success(
+        `批量检测完成：共 ${data.checked} 个，正常 ${data.normal} 个，疑似双向号 ${data.restricted} 个，超时 ${data.timeout} 个，未授权 ${data.unauthorized} 个，异常 ${data.error} 个`,
+        8,
+      );
+    },
+    onError: (error) => message.error(error?.response?.data?.detail || error.message || '批量双向号检测失败'),
+  });
+
   const uploadProps = useMemo(() => ({
     accept: '.session,.csv,.xlsx,.xls,.txt',
     multiple: true,
@@ -339,8 +372,21 @@ export default function Sessions() {
           >
             新建分组
           </Button>
-          <Button icon={<CheckCircleOutlined />} loading={healthMutation.isPending} onClick={() => healthMutation.mutate()}>
+          <Button
+            icon={<CheckCircleOutlined />}
+            loading={healthMutation.isPending}
+            disabled={batchBidirectionalMutation.isPending}
+            onClick={() => healthMutation.mutate()}
+          >
             健康检查
+          </Button>
+          <Button
+            icon={<SafetyCertificateOutlined />}
+            loading={batchBidirectionalMutation.isPending}
+            disabled={bidirectionalMutation.isPending || healthMutation.isPending}
+            onClick={() => batchBidirectionalMutation.mutate()}
+          >
+            批量双向号检测
           </Button>
           <Button onClick={() => setLogsOpen(true)}>操作日志</Button>
         </div>
@@ -404,6 +450,8 @@ export default function Sessions() {
         onDisconnect={(record) => actionMutation.mutate({ id: record.id, action: 'disconnect' })}
         onDelete={(record) => deleteMutation.mutate(record)}
         onTaskLogs={(record) => setTaskLogSession(record)}
+        onBidirectionalCheck={(record) => bidirectionalMutation.mutate(record)}
+        checkingSessionId={batchBidirectionalMutation.isPending ? -1 : (bidirectionalMutation.isPending ? bidirectionalMutation.variables?.id : null)}
       />
       <SessionModal
         open={modalOpen}

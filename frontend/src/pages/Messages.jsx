@@ -1,10 +1,10 @@
-import { ClearOutlined, PaperClipOutlined, SendOutlined, SearchOutlined } from '@ant-design/icons';
-import { Avatar, Badge, Button, Card, Empty, Image, Input, List, Popover, Radio, Select, Space, Tag, Tooltip, Typography, message } from 'antd';
+import { ClearOutlined, PaperClipOutlined, SendOutlined, SearchOutlined, StarFilled, StarOutlined } from '@ant-design/icons';
+import { Avatar, Badge, Button, Card, Empty, Image, Input, List, Popover, Radio, Select, Space, Tabs, Tag, Tooltip, Typography, message } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import dayjs from 'dayjs';
 import { useMemo, useState } from 'react';
 
-import { getCustomerMessages, getCustomers, getMaterials, getSupportAgents, replyCustomer } from '../api/index.js';
+import { getCustomerMessages, getCustomers, getMaterials, getSupportAgents, replyCustomer, updateCustomerFavorite } from '../api/index.js';
 
 const statusColor = {
   success: 'green',
@@ -13,6 +13,20 @@ const statusColor = {
   failed: 'red',
   not_replied: 'default',
   replied: 'green',
+};
+
+const statusText = {
+  success: '发送成功',
+  pending: '待发送',
+  sending: '发送中',
+  failed: '发送失败',
+  unknown: '未知',
+  not_replied: '未回复',
+  replied: '已回复',
+  connected: '已连接',
+  disconnected: '未连接',
+  connecting: '连接中',
+  error: '异常',
 };
 
 const materialTypeMeta = {
@@ -30,6 +44,8 @@ export default function Messages() {
   const [materialType, setMaterialType] = useState('text');
   const [materialPickerOpen, setMaterialPickerOpen] = useState(false);
   const [kfId, setKfId] = useState();
+  const [replyStatus, setReplyStatus] = useState();
+  const [chatTab, setChatTab] = useState('all');
 
   const { data: agents = [] } = useQuery({
     queryKey: ['support-agents'],
@@ -44,8 +60,10 @@ export default function Messages() {
     const params = {};
     if (keyword) params.keyword = keyword;
     if (kfId) params.kf_id = kfId;
+    if (replyStatus) params.reply_status = replyStatus;
+    if (chatTab === 'favorites') params.is_favorite = true;
     return params;
-  }, [keyword, kfId]);
+  }, [keyword, kfId, replyStatus, chatTab]);
 
   const { data: customers = [], isLoading } = useQuery({
     queryKey: ['customers', customerParams],
@@ -80,6 +98,23 @@ export default function Messages() {
     },
     onError: (error) => message.error(error?.response?.data?.detail || error.message),
   });
+
+  const favoriteMutation = useMutation({
+    mutationFn: ({ id, isFavorite }) => updateCustomerFavorite(id, isFavorite),
+    onSuccess: (customer) => {
+      queryClient.invalidateQueries({ queryKey: ['customers'] });
+      if (selectedCustomer?.id === customer.id) {
+        setSelected(chatTab === 'favorites' && !customer.is_favorite ? null : customer);
+      }
+      message.success(customer.is_favorite ? '已收藏为意向用户' : '已取消收藏');
+    },
+    onError: (error) => message.error(error?.response?.data?.detail || error.message),
+  });
+
+  const toggleFavorite = (customer, event) => {
+    event?.stopPropagation();
+    favoriteMutation.mutate({ id: customer.id, isFavorite: !customer.is_favorite });
+  };
 
   const agentOptions = [
     { label: '全部客服', value: 0 },
@@ -193,6 +228,31 @@ export default function Messages() {
           value={keyword}
           onChange={(event) => setKeyword(event.target.value)}
         />
+        <Select
+          allowClear
+          placeholder="筛选客户回复状态"
+          value={replyStatus}
+          options={[
+            { label: '已回复客户', value: 'replied' },
+            { label: '未回复客户', value: 'not_replied' },
+          ]}
+          onChange={(value) => {
+            setReplyStatus(value);
+            setSelected(null);
+          }}
+        />
+        <Tabs
+          className="chat-list-tabs"
+          activeKey={chatTab}
+          onChange={(value) => {
+            setChatTab(value);
+            setSelected(null);
+          }}
+          items={[
+            { key: 'all', label: '全部聊天' },
+            { key: 'favorites', label: '收藏聊天' },
+          ]}
+        />
         <List
           loading={isLoading}
           dataSource={customers}
@@ -214,10 +274,21 @@ export default function Messages() {
                     </Badge>
                   }
                   title={
-                    <Space>
-                      <Typography.Text strong>{item.nickname || item.phone_number}</Typography.Text>
-                      <Tag color={statusColor[item.reply_status]}>{item.reply_status}</Tag>
-                    </Space>
+                    <div className="customer-card-title">
+                      <Space size={6}>
+                        <Typography.Text strong ellipsis>{item.nickname || item.phone_number}</Typography.Text>
+                        <Tag color={statusColor[item.reply_status]}>{statusText[item.reply_status] || item.reply_status}</Tag>
+                      </Space>
+                      <Tooltip title={item.is_favorite ? '取消收藏' : '收藏为意向用户'}>
+                        <Button
+                          type="text"
+                          className={item.is_favorite ? 'favorite-button active' : 'favorite-button'}
+                          icon={item.is_favorite ? <StarFilled /> : <StarOutlined />}
+                          loading={favoriteMutation.isPending && favoriteMutation.variables?.id === item.id}
+                          onClick={(event) => toggleFavorite(item, event)}
+                        />
+                      </Tooltip>
+                    </div>
                   }
                   description={
                     <Space direction="vertical" size={0}>
@@ -237,12 +308,21 @@ export default function Messages() {
         {selectedCustomer ? (
           <>
             <div className="chat-header">
-              <Space direction="vertical" size={0}>
+              <div>
                 <Typography.Title level={4}>{selectedCustomer.nickname || selectedCustomer.phone_number}</Typography.Title>
                 <Typography.Text type="secondary">
                   客服: {selectedCustomer.kf_name || '未绑定'} / Session: {selectedCustomer.assigned_session_name || '-'}
                 </Typography.Text>
-              </Space>
+              </div>
+              <Tooltip title={selectedCustomer.is_favorite ? '取消收藏' : '收藏为意向用户'}>
+                <Button
+                  className={selectedCustomer.is_favorite ? 'favorite-button active' : 'favorite-button'}
+                  icon={selectedCustomer.is_favorite ? <StarFilled /> : <StarOutlined />}
+                  onClick={(event) => toggleFavorite(selectedCustomer, event)}
+                >
+                  {selectedCustomer.is_favorite ? '已收藏' : '收藏意向用户'}
+                </Button>
+              </Tooltip>
             </div>
             <div className="chat-messages">
               {messages.length ? messages.map((item) => (
@@ -256,7 +336,16 @@ export default function Messages() {
                     />
                   ) : null}
                   {item.content ? <div>{item.content}</div> : null}
-                  <span>{dayjs(item.created_at).format('YYYY-MM-DD HH:mm:ss')}</span>
+                  <div className="chat-message-meta">
+                    <span>{dayjs(item.created_at).format('YYYY-MM-DD HH:mm:ss')}</span>
+                    {item.direction === 'outbound' ? (
+                      <Tooltip title={item.read_status === 'read' ? '对方已读' : '已发送'}>
+                        <span className={item.read_status === 'read' ? 'message-checks read' : 'message-checks'}>
+                          {item.read_status === 'read' ? '✓✓' : '✓'}
+                        </span>
+                      </Tooltip>
+                    ) : null}
+                  </div>
                 </div>
               )) : <Empty description="暂无消息" />}
             </div>
@@ -302,10 +391,11 @@ export default function Messages() {
             <div className="customer-info-card"><Typography.Text type="secondary">手机号</Typography.Text><strong>{selectedCustomer.phone_number}</strong></div>
             <div className="customer-info-card"><Typography.Text type="secondary">TG ID</Typography.Text><strong>{selectedCustomer.tg_id || '-'}</strong></div>
             <div className="customer-info-card"><Typography.Text type="secondary">负责客服</Typography.Text><strong>{selectedCustomer.kf_name || '未绑定'}</strong></div>
-            <div className="customer-info-card"><Typography.Text type="secondary">发送状态</Typography.Text><Tag color={statusColor[selectedCustomer.send_status]}>{selectedCustomer.send_status}</Tag></div>
-            <div className="customer-info-card"><Typography.Text type="secondary">回复状态</Typography.Text><Tag color={statusColor[selectedCustomer.reply_status]}>{selectedCustomer.reply_status}</Tag></div>
+            <div className="customer-info-card"><Typography.Text type="secondary">意向收藏</Typography.Text><strong>{selectedCustomer.is_favorite ? '已收藏' : '未收藏'}</strong></div>
+            <div className="customer-info-card"><Typography.Text type="secondary">发送状态</Typography.Text><Tag color={statusColor[selectedCustomer.send_status]}>{statusText[selectedCustomer.send_status] || selectedCustomer.send_status}</Tag></div>
+            <div className="customer-info-card"><Typography.Text type="secondary">回复状态</Typography.Text><Tag color={statusColor[selectedCustomer.reply_status]}>{statusText[selectedCustomer.reply_status] || selectedCustomer.reply_status}</Tag></div>
             <div className="customer-info-card"><Typography.Text type="secondary">所属 Session</Typography.Text><strong>{selectedCustomer.assigned_session_name || '-'}</strong></div>
-            <div className="customer-info-card"><Typography.Text type="secondary">Session 状态</Typography.Text><strong>{selectedCustomer.assigned_session_status || '-'}</strong></div>
+            <div className="customer-info-card"><Typography.Text type="secondary">Session 状态</Typography.Text><strong>{statusText[selectedCustomer.assigned_session_status] || selectedCustomer.assigned_session_status || '-'}</strong></div>
             <div className="customer-info-card"><Typography.Text type="secondary">最近消息</Typography.Text><strong>{selectedCustomer.last_message_at ? dayjs(selectedCustomer.last_message_at).format('YYYY-MM-DD HH:mm:ss') : '-'}</strong></div>
             <div className="customer-info-card"><Typography.Text type="secondary">备注</Typography.Text><strong>{selectedCustomer.remark || '-'}</strong></div>
           </Space>

@@ -22,7 +22,15 @@ from app.services.proxy_service import proxy_service
 
 
 class CustomerService:
-    def list_customers(self, db: Session, kf_id: int | None = None, keyword: str | None = None, owner_id: int | None = None) -> list[dict[str, Any]]:
+    def list_customers(
+        self,
+        db: Session,
+        kf_id: int | None = None,
+        keyword: str | None = None,
+        reply_status: str | None = None,
+        is_favorite: bool | None = None,
+        owner_id: int | None = None,
+    ) -> list[dict[str, Any]]:
         stmt = (
             select(Customer, TelegramSession, SupportAgent)
             .join(TelegramSession, Customer.assigned_session_id == TelegramSession.id, isouter=True)
@@ -33,6 +41,10 @@ class CustomerService:
             stmt = stmt.where(Customer.owner_id == owner_id)
         if kf_id is not None:
             stmt = stmt.where(TelegramSession.kf_id == kf_id)
+        if reply_status in {"replied", "not_replied"}:
+            stmt = stmt.where(Customer.reply_status == reply_status)
+        if is_favorite is not None:
+            stmt = stmt.where(Customer.is_favorite == is_favorite)
         if keyword:
             like = f"%{keyword}%"
             stmt = stmt.where(or_(Customer.phone_number.like(like), Customer.nickname.like(like), Customer.tg_id.like(like)))
@@ -43,6 +55,13 @@ class CustomerService:
         customer = db.get(Customer, customer_id)
         if not customer or (owner_id is not None and customer.owner_id != owner_id):
             raise ValueError("Customer not found")
+        return customer
+
+    def set_favorite(self, db: Session, customer_id: int, is_favorite: bool, owner_id: int | None = None) -> Customer:
+        customer = self.get_customer(db, customer_id, owner_id)
+        customer.is_favorite = is_favorite
+        db.commit()
+        db.refresh(customer)
         return customer
 
     async def list_messages(self, db: Session, customer_id: int, limit: int = 100, owner_id: int | None = None) -> list[Message]:
@@ -85,10 +104,20 @@ class CustomerService:
             raise ValueError("Assigned session is not connected")
 
         material = material_service.get_material(db, material_id, owner_id) if material_id else None
-        content, image_path = await self._send_reply(session, customer, text, material, proxy_service.get_proxy_url_for_session(db, session))
+        content, image_path, telegram_message_id = await self._send_reply(session, customer, text, material, proxy_service.get_proxy_url_for_session(db, session))
         chat_key = customer.tg_id or customer.phone_number
-        db.add(Message(session_id=session.id, chat_id=chat_key, sender=session.username, content=content, image_path=image_path, direction="outbound", read_status="read"))
-        customer.reply_status = "replied"
+        db.add(
+            Message(
+                session_id=session.id,
+                chat_id=chat_key,
+                telegram_message_id=telegram_message_id,
+                sender=session.username,
+                content=content,
+                image_path=image_path,
+                direction="outbound",
+                read_status="sent",
+            )
+        )
         customer.last_message_at = datetime.utcnow()
         db.commit()
         db.refresh(customer)
@@ -150,6 +179,7 @@ class CustomerService:
             "kf_name": support_agent.name if support_agent else None,
             "send_status": customer.send_status,
             "reply_status": customer.reply_status,
+            "is_favorite": customer.is_favorite,
             "unread_count": self.unread_count(db, customer),
             "remark": customer.remark,
             "last_message_at": customer.last_message_at.isoformat() if customer.last_message_at else None,
@@ -178,7 +208,7 @@ class CustomerService:
         text: str,
         material: Material | None,
         proxy_url: str | None,
-    ) -> tuple[str, str | None]:
+    ) -> tuple[str, str | None, int | None]:
         from app.services.incoming_listener import incoming_message_listener
 
         await incoming_message_listener.pause_session(session.id)
@@ -220,32 +250,34 @@ class CustomerService:
         except Exception:
             pass
 
-    async def _send_reply_payload(self, client: Any, entity: Any, text: str, material: Material | None) -> tuple[str, str | None]:
+    async def _send_reply_payload(self, client: Any, entity: Any, text: str, material: Material | None) -> tuple[str, str | None, int | None]:
         if not material:
-            await asyncio.wait_for(client.send_message(entity, text), timeout=30)
-            return text, None
+            result = await asyncio.wait_for(client.send_message(entity, text), timeout=30)
+            return text, None, self._sent_message_id(result)
 
         if material.material_type == "text":
             content = (material.content or text or "").strip()
             if not content:
                 raise ValueError("Selected text material is empty")
-            await asyncio.wait_for(client.send_message(entity, content), timeout=30)
-            return content, None
+            result = await asyncio.wait_for(client.send_message(entity, content), timeout=30)
+            return content, None, self._sent_message_id(result)
 
         if material.material_type == "image":
             if not material.file_path:
                 raise ValueError("Selected image material has no file")
             file_path = self._local_static_path(material.file_path)
-            await asyncio.wait_for(client.send_file(entity, file_path, caption=text or ""), timeout=60)
-            return text or f"图片素材：{material.name}", material.file_path
+            result = await asyncio.wait_for(client.send_file(entity, file_path, caption=text or ""), timeout=60)
+            return text or f"图片素材：{material.name}", material.file_path, self._sent_message_id(result)
 
         if material.material_type == "contact":
             content = self._contact_card_message(material.content)
-            await self._send_contact_card(client, entity, material.content)
+            result = await self._send_contact_card(client, entity, material.content)
+            sent_id = self._sent_message_id(result)
             if text:
-                await asyncio.wait_for(client.send_message(entity, text), timeout=30)
+                text_result = await asyncio.wait_for(client.send_message(entity, text), timeout=30)
+                sent_id = self._sent_message_id(text_result) or sent_id
                 content = f"{content}\n{text}".strip()
-            return content, None
+            return content, None, sent_id
 
         raise ValueError("Unsupported material type")
 
@@ -254,7 +286,7 @@ class CustomerService:
             return str(Path("static") / value.removeprefix("/static/"))
         return value
 
-    async def _send_contact_card(self, client: Any, entity: Any, contact_card: str | None) -> None:
+    async def _send_contact_card(self, client: Any, entity: Any, contact_card: str | None) -> Any:
         card = self._load_contact_card(contact_card)
         phone_number = (card.get("phone_number") or "").strip()
         first_name = (card.get("first_name") or "").strip()
@@ -267,7 +299,7 @@ class CustomerService:
             last_name=last_name,
             vcard=card.get("vcard") or "",
         )
-        await asyncio.wait_for(
+        return await asyncio.wait_for(
             client(
                 SendMediaRequest(
                     peer=entity,
@@ -278,6 +310,24 @@ class CustomerService:
             ),
             timeout=30,
         )
+
+    def _sent_message_id(self, result: Any) -> int | None:
+        direct_id = getattr(result, "id", None)
+        if direct_id is not None:
+            try:
+                return int(direct_id)
+            except (TypeError, ValueError):
+                pass
+        ids: list[int] = []
+        for update_item in getattr(result, "updates", []) or []:
+            message = getattr(update_item, "message", None)
+            value = getattr(message, "id", None) or getattr(update_item, "id", None)
+            try:
+                if value is not None:
+                    ids.append(int(value))
+            except (TypeError, ValueError):
+                continue
+        return max(ids) if ids else None
 
     def _load_contact_card(self, value: str | None) -> dict[str, str]:
         if not value:

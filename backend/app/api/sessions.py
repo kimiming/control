@@ -106,6 +106,20 @@ async def health_check(db: Session = Depends(get_db), user: User = Depends(get_c
     return await session_service.health_check_once(db, user.id)
 
 
+@router.post("/bidirectional-check")
+async def batch_bidirectional_check(db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, int]:
+    return await session_service.check_all_bidirectional_statuses(db, user.id)
+
+
+@router.post("/{session_id}/bidirectional-check")
+async def bidirectional_check(session_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    try:
+        session = await session_service.check_bidirectional_status(db, session_id, user.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return session_service.serialize_session(session)
+
+
 @router.get("/logs")
 def list_logs(session_id: int | None = None, limit: int = 100, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> list[dict[str, Any]]:
     logs = session_service.list_logs(db, session_id, limit, user.id)

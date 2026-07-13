@@ -3,7 +3,7 @@ import contextlib
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, update
 from telethon import events
 
 from app.core.database import SessionLocal
@@ -117,6 +117,10 @@ class IncomingMessageListener:
             async def handler(event: Any) -> None:
                 await self._store_incoming_message(session_id, event)
 
+            @client.on(events.MessageRead)
+            async def read_handler(event: Any) -> None:
+                await self._store_outbound_read_receipt(session_id, event)
+
             await self._catch_up_recent_messages(session_id, client)
             await client.run_until_disconnected()
         except asyncio.CancelledError:
@@ -197,6 +201,39 @@ class IncomingMessageListener:
                     read_status="unread",
                     created_at=created_at,
                 )
+            )
+            db.commit()
+        finally:
+            db.close()
+
+    async def _store_outbound_read_receipt(self, session_id: int, event: Any) -> None:
+        max_id = getattr(event, "max_id", None)
+        chat_id = getattr(event, "chat_id", None)
+        if not max_id or chat_id is None:
+            return
+        chat_key = str(chat_id)
+        db = SessionLocal()
+        try:
+            customer = db.scalar(
+                select(Customer).where(
+                    Customer.assigned_session_id == session_id,
+                    Customer.tg_id == chat_key,
+                )
+            )
+            chat_keys = [chat_key]
+            if customer:
+                chat_keys.extend(value for value in [customer.tg_id, customer.phone_number] if value)
+            db.execute(
+                update(Message)
+                .where(
+                    Message.session_id == session_id,
+                    Message.chat_id.in_(set(chat_keys)),
+                    Message.direction == "outbound",
+                    Message.telegram_message_id.is_not(None),
+                    Message.telegram_message_id <= int(max_id),
+                    Message.read_status != "read",
+                )
+                .values(read_status="read")
             )
             db.commit()
         finally:

@@ -18,6 +18,7 @@ from app.models.customer_profile import CustomerProfile
 from app.models.session import SessionStatus, SessionTaskLog, TelegramSession
 from app.models.task import MarketingTask
 from app.models.message import Message
+from app.models.material import Material
 from app.services.customer_service import customer_service
 from app.services.image_storage import save_compressed_image
 from app.services.material_service import material_service
@@ -50,16 +51,24 @@ class TaskService:
         image_material_id: int | None = None,
         contact_material_id: int | None = None,
         customer_profile_id: int | None = None,
+        send_type: str = "single",
+        material_group_id: int | None = None,
         owner_id: int | None = None,
     ) -> MarketingTask:
         targets = await self._resolve_targets(db, targets_file, customer_profile_id, owner_id)
-        if content_material_id:
-            material = material_service.get_material(db, content_material_id, owner_id)
-            content = material.content or content
-        image_path = await self._resolve_image_path(db, image, image_material_id, owner_id)
-        contact_card = self._resolve_contact_card(db, contact_material_id, owner_id)
-        if not content.strip() and not image_path and not contact_card:
-            raise ValueError("Task content, image or contact card is required")
+        send_type = self._validate_send_type(send_type)
+        if send_type == "group":
+            self._validate_material_group(db, material_group_id, owner_id)
+            content, image_path, contact_card = "", None, None
+        else:
+            material_group_id = None
+            if content_material_id:
+                material = material_service.get_material(db, content_material_id, owner_id)
+                content = material.content or content
+            image_path = await self._resolve_image_path(db, image, image_material_id, owner_id)
+            contact_card = self._resolve_contact_card(db, contact_material_id, owner_id)
+            if not content.strip() and not image_path and not contact_card:
+                raise ValueError("Task content, image or contact card is required")
         task = MarketingTask(
             owner_id=owner_id,
             name=name,
@@ -70,6 +79,8 @@ class TaskService:
             total_targets=len(targets),
             image_path=image_path,
             contact_card=contact_card,
+            send_type=send_type,
+            material_group_id=material_group_id,
         )
         db.add(task)
         db.commit()
@@ -90,29 +101,42 @@ class TaskService:
         image_material_id: int | None = None,
         contact_material_id: int | None = None,
         customer_profile_id: int | None = None,
+        send_type: str = "single",
+        material_group_id: int | None = None,
         owner_id: int | None = None,
     ) -> MarketingTask:
         task = self.get_task(db, task_id, owner_id)
         task.name = name
-        if content_material_id:
-            material = material_service.get_material(db, content_material_id, owner_id)
-            task.content = material.content or content
+        send_type = self._validate_send_type(send_type)
+        task.send_type = send_type
+        if send_type == "group":
+            self._validate_material_group(db, material_group_id, owner_id)
+            task.material_group_id = material_group_id
+            task.content = ""
+            task.image_path = None
+            task.contact_card = None
         else:
-            task.content = content
+            task.material_group_id = None
+            if content_material_id:
+                material = material_service.get_material(db, content_material_id, owner_id)
+                task.content = material.content or content
+            else:
+                task.content = content
         task.session_group_id = session_group_id
         task.messages_per_target = messages_per_target
         if targets_file or customer_profile_id:
             targets = await self._resolve_targets(db, targets_file, customer_profile_id, owner_id)
             task.targets_text = "\n".join(targets)
             task.total_targets = len(targets)
-        image_path = await self._resolve_image_path(db, image, image_material_id, owner_id)
-        if image_path:
-            task.image_path = image_path
-        contact_card = self._resolve_contact_card(db, contact_material_id, owner_id)
-        if contact_material_id is not None:
-            task.contact_card = contact_card
-        if not task.content.strip() and not task.image_path and not task.contact_card:
-            raise ValueError("Task content, image or contact card is required")
+        if send_type == "single":
+            image_path = await self._resolve_image_path(db, image, image_material_id, owner_id)
+            if image_path:
+                task.image_path = image_path
+            contact_card = self._resolve_contact_card(db, contact_material_id, owner_id)
+            if contact_material_id is not None:
+                task.contact_card = contact_card
+            if not task.content.strip() and not task.image_path and not task.contact_card:
+                raise ValueError("Task content, image or contact card is required")
         db.commit()
         db.refresh(task)
         return task
@@ -121,6 +145,31 @@ class TaskService:
         task = self.get_task(db, task_id, owner_id)
         db.delete(task)
         db.commit()
+
+    def list_task_logs(self, db: Session, task_id: int, limit: int = 500, owner_id: int | None = None) -> list[dict[str, Any]]:
+        self.get_task(db, task_id, owner_id)
+        stmt = (
+            select(SessionTaskLog, TelegramSession)
+            .join(TelegramSession, SessionTaskLog.session_id == TelegramSession.id, isouter=True)
+            .where(SessionTaskLog.task_id == task_id)
+            .order_by(SessionTaskLog.created_at.desc(), SessionTaskLog.id.desc())
+            .limit(min(max(limit, 1), 1000))
+        )
+        return [
+            {
+                "id": log.id,
+                "task_id": log.task_id,
+                "task_name": log.task_name,
+                "session_id": log.session_id,
+                "session_name": session.session_name if session else None,
+                "session_phone": session.phone if session else None,
+                "target_phone": log.target_phone,
+                "status": log.status,
+                "message": log.message,
+                "sent_at": log.created_at.isoformat() if log.created_at else None,
+            }
+            for log, session in db.execute(stmt).all()
+        ]
 
     async def execute_task(self, db: Session, task_id: int, owner_id: int | None = None) -> MarketingTask:
         task = self.get_task(db, task_id, owner_id)
@@ -131,6 +180,17 @@ class TaskService:
             db.commit()
             db.refresh(task)
             return task
+
+        group_materials: list[Material] = []
+        if (task.send_type or "single") == "group":
+            try:
+                group_materials = self._validate_material_group(db, task.material_group_id, owner_id)
+            except ValueError as exc:
+                task.status = "failed"
+                task.error_message = str(exc)
+                db.commit()
+                db.refresh(task)
+                return task
 
         stmt = select(TelegramSession).where(TelegramSession.status == SessionStatus.connected)
         if owner_id is not None:
@@ -162,6 +222,7 @@ class TaskService:
 
         while target_index < len(targets) and self._has_session_quota(available_sessions, session_sent_counts, per_session_quota):
             target = targets[target_index]
+            payloads = [self._material_payload(material) for material in self._weighted_random_order(group_materials)] if group_materials else None
             sent = False
             last_error = ""
             attempts = 0
@@ -188,6 +249,7 @@ class TaskService:
                         proxy_url,
                         session_customer.tg_id if session_customer else None,
                         session_customer.access_hash if session_customer else None,
+                        payloads,
                     )
                     customer = customer_service.upsert_customer_from_task(
                         db,
@@ -198,17 +260,21 @@ class TaskService:
                         sent_meta.get("access_hash"),
                         owner_id,
                     )
-                    db.add(
-                        Message(
-                            session_id=session.id,
-                            chat_id=customer.tg_id or target,
-                            sender=session.username,
-                            content=task.content or self._contact_card_message(task.contact_card),
-                            image_path=task.image_path,
-                            direction="outbound",
-                            read_status="read",
+                    outbound_payloads = payloads or [{"content": task.content, "image_path": task.image_path, "contact_card": task.contact_card}]
+                    sent_message_ids = sent_meta.get("message_ids") or []
+                    for payload_index, payload in enumerate(outbound_payloads):
+                        db.add(
+                            Message(
+                                session_id=session.id,
+                                chat_id=customer.tg_id or target,
+                                telegram_message_id=sent_message_ids[payload_index] if payload_index < len(sent_message_ids) else None,
+                                sender=session.username,
+                                content=payload["content"] or self._contact_card_message(payload["contact_card"]),
+                                image_path=payload["image_path"],
+                                direction="outbound",
+                                read_status="sent",
+                            )
                         )
-                    )
                     session_sent_counts[session.id] = session_sent_counts.get(session.id, 0) + 1
                     task.sent_count += 1
                     self._log_session_task(
@@ -267,6 +333,8 @@ class TaskService:
             "content": task.content,
             "image_path": task.image_path,
             "contact_card": self._load_contact_card(task.contact_card),
+            "send_type": task.send_type or "single",
+            "material_group_id": task.material_group_id,
             "session_group_id": task.session_group_id,
             "targets": targets,
             "messages_per_target": task.messages_per_target,
@@ -290,7 +358,8 @@ class TaskService:
         proxy_url: str | None,
         target_tg_id: str | None = None,
         target_access_hash: str | None = None,
-    ) -> dict[str, str | None]:
+        payloads: list[dict[str, str | None]] | None = None,
+    ) -> dict[str, Any]:
         from app.services.incoming_listener import incoming_message_listener
 
         await incoming_message_listener.pause_session(session.id)
@@ -300,31 +369,17 @@ class TaskService:
             if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
                 raise RuntimeError("Session is not authorized")
             entity = await self._resolve_target_entity(client, target_phone, target_tg_id, target_access_hash)
-            caption = content.strip() or None
-            if image_path:
+            outbound_payloads = payloads or [{"content": content, "image_path": image_path, "contact_card": contact_card}]
+            sent_message_ids: list[int | None] = []
+            for payload in outbound_payloads:
                 try:
-                    await asyncio.wait_for(client.send_file(entity, image_path.lstrip("/"), caption=caption), timeout=30)
+                    message_id = await self._send_payload(client, entity, payload)
                 except Exception as exc:
                     if not self._is_invalid_peer_error(exc):
                         raise
                     entity = await self._resolve_target_entity(client, target_phone, None, None, force_contact=True)
-                    await asyncio.wait_for(client.send_file(entity, image_path.lstrip("/"), caption=caption), timeout=30)
-            elif content.strip():
-                try:
-                    await asyncio.wait_for(client.send_message(entity, content), timeout=30)
-                except Exception as exc:
-                    if not self._is_invalid_peer_error(exc):
-                        raise
-                    entity = await self._resolve_target_entity(client, target_phone, None, None, force_contact=True)
-                    await asyncio.wait_for(client.send_message(entity, content), timeout=30)
-            if contact_card:
-                try:
-                    await self._send_contact_card(client, entity, contact_card)
-                except Exception as exc:
-                    if not self._is_invalid_peer_error(exc):
-                        raise
-                    entity = await self._resolve_target_entity(client, target_phone, None, None, force_contact=True)
-                    await self._send_contact_card(client, entity, contact_card)
+                    message_id = await self._send_payload(client, entity, payload)
+                sent_message_ids.append(message_id)
             nickname = " ".join(part for part in [getattr(entity, "first_name", None), getattr(entity, "last_name", None)] if part)
             entity_id = getattr(entity, "id", None) or getattr(entity, "user_id", None)
             access_hash = getattr(entity, "access_hash", None)
@@ -332,6 +387,7 @@ class TaskService:
                 "tg_id": str(entity_id) if entity_id else target_tg_id,
                 "access_hash": str(access_hash) if access_hash else None,
                 "nickname": getattr(entity, "username", None) or nickname or target_phone,
+                "message_ids": sent_message_ids,
             }
         finally:
             if client.is_connected():
@@ -369,7 +425,65 @@ class TaskService:
             raise RuntimeError(f"Target {target_phone} is not available to this Session on Telegram")
         return result.users[0]
 
-    async def _send_contact_card(self, client: Any, entity: Any, contact_card: str) -> None:
+    async def _send_payload(self, client: Any, entity: Any, payload: dict[str, str | None]) -> int | None:
+        content = payload.get("content") or ""
+        image_path = payload.get("image_path")
+        contact_card = payload.get("contact_card")
+        message_id: int | None = None
+        if image_path:
+            result = await asyncio.wait_for(client.send_file(entity, image_path.lstrip("/"), caption=content.strip() or None), timeout=30)
+            message_id = self._sent_message_id(result)
+        elif content.strip():
+            result = await asyncio.wait_for(client.send_message(entity, content), timeout=30)
+            message_id = self._sent_message_id(result)
+        if contact_card:
+            result = await self._send_contact_card(client, entity, contact_card)
+            message_id = self._sent_message_id(result) or message_id
+        return message_id
+
+    def _validate_send_type(self, send_type: str) -> str:
+        if send_type not in {"single", "group"}:
+            raise ValueError("Send type must be single or group")
+        return send_type
+
+    def _validate_material_group(self, db: Session, group_id: int | None, owner_id: int | None) -> list[Material]:
+        if group_id is None:
+            raise ValueError("Material group is required")
+        materials = material_service.list_group_materials(db, group_id, owner_id)
+        if not materials:
+            raise ValueError("Selected material group is empty")
+        for material in materials:
+            if material.material_type == "text" and not (material.content or "").strip():
+                raise ValueError(f"Text material '{material.name}' has no content")
+            if material.material_type == "image" and not material.file_path:
+                raise ValueError(f"Image material '{material.name}' has no image")
+            if material.material_type == "contact":
+                card = self._load_contact_card(material.content)
+                if not card.get("phone_number", "").strip() or not card.get("first_name", "").strip():
+                    raise ValueError(f"Contact material '{material.name}' is incomplete")
+            if material.material_type not in {"text", "image", "contact"}:
+                raise ValueError(f"Material '{material.name}' has an unsupported type")
+        return materials
+
+    def _material_payload(self, material: Material) -> dict[str, str | None]:
+        if material.material_type == "text":
+            return {"content": material.content or "", "image_path": None, "contact_card": None}
+        if material.material_type == "image":
+            return {"content": "", "image_path": material.file_path, "contact_card": None}
+        return {"content": "", "image_path": None, "contact_card": material.content}
+
+    def _weighted_random_order(self, materials: list[Material]) -> list[Material]:
+        """Return every material once, with higher priorities more likely to appear earlier."""
+        remaining = list(materials)
+        ordered: list[Material] = []
+        while remaining:
+            weights = [max(material.priority, 0) + 1 for material in remaining]
+            selected = random.choices(remaining, weights=weights, k=1)[0]
+            ordered.append(selected)
+            remaining.remove(selected)
+        return ordered
+
+    async def _send_contact_card(self, client: Any, entity: Any, contact_card: str) -> Any:
         card = self._load_contact_card(contact_card)
         phone_number = (card.get("phone_number") or "").strip()
         first_name = (card.get("first_name") or "").strip()
@@ -382,7 +496,7 @@ class TaskService:
             last_name=last_name,
             vcard=card.get("vcard") or "",
         )
-        await asyncio.wait_for(
+        return await asyncio.wait_for(
             client(
                 SendMediaRequest(
                     peer=entity,
@@ -393,6 +507,24 @@ class TaskService:
             ),
             timeout=30,
         )
+
+    def _sent_message_id(self, result: Any) -> int | None:
+        direct_id = getattr(result, "id", None)
+        if direct_id is not None:
+            try:
+                return int(direct_id)
+            except (TypeError, ValueError):
+                pass
+        ids: list[int] = []
+        for update_item in getattr(result, "updates", []) or []:
+            message = getattr(update_item, "message", None)
+            value = getattr(message, "id", None) or getattr(update_item, "id", None)
+            try:
+                if value is not None:
+                    ids.append(int(value))
+            except (TypeError, ValueError):
+                continue
+        return max(ids) if ids else None
 
     def _resolve_contact_card(self, db: Session, contact_material_id: int | None, owner_id: int | None = None) -> str | None:
         if not contact_material_id:

@@ -15,6 +15,8 @@ class MarketingTask(Base):
     content: Mapped[str] = mapped_column(Text)
     image_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
     contact_card: Mapped[str | None] = mapped_column(Text, nullable=True)
+    send_type: Mapped[str] = mapped_column(String(20), default="single", index=True)
+    material_group_id: Mapped[int | None] = mapped_column(ForeignKey("material_groups.id", ondelete="SET NULL"), nullable=True, index=True)
     session_group_id: Mapped[int | None] = mapped_column(ForeignKey("session_groups.id", ondelete="SET NULL"), nullable=True, index=True)
     targets_text: Mapped[str] = mapped_column(Text)
     messages_per_target: Mapped[int] = mapped_column(Integer, default=3)

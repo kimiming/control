@@ -5,7 +5,28 @@ from app.core.database import SessionLocal, engine
 
 
 def run_lightweight_migrations() -> None:
-    if not engine.url.drivername.startswith("mysql"):
+    if engine.url.drivername.startswith("sqlite"):
+        statements = [
+            "ALTER TABLE materials ADD COLUMN group_id INTEGER NULL",
+            "CREATE INDEX ix_materials_group_id ON materials (group_id)",
+            "ALTER TABLE tasks ADD COLUMN send_type VARCHAR(20) NOT NULL DEFAULT 'single'",
+            "ALTER TABLE tasks ADD COLUMN material_group_id INTEGER NULL",
+            "CREATE INDEX ix_tasks_send_type ON tasks (send_type)",
+            "CREATE INDEX ix_tasks_material_group_id ON tasks (material_group_id)",
+            "ALTER TABLE customers ADD COLUMN is_favorite BOOLEAN NOT NULL DEFAULT 0",
+            "CREATE INDEX ix_customers_is_favorite ON customers (is_favorite)",
+            "ALTER TABLE sessions ADD COLUMN bidirectional_status VARCHAR(30) NOT NULL DEFAULT 'unchecked'",
+            "ALTER TABLE sessions ADD COLUMN bidirectional_detail TEXT NULL",
+            "ALTER TABLE sessions ADD COLUMN last_bidirectional_check_at DATETIME NULL",
+            "CREATE INDEX ix_sessions_bidirectional_status ON sessions (bidirectional_status)",
+            "ALTER TABLE material_groups ADD COLUMN color VARCHAR(20) NOT NULL DEFAULT 'blue'",
+        ]
+        with engine.begin() as connection:
+            for statement in statements:
+                try:
+                    connection.execute(text(statement))
+                except Exception:
+                    pass
         return
     statements = [
         """
@@ -82,6 +103,21 @@ def run_lightweight_migrations() -> None:
         "CREATE INDEX ix_materials_owner_id ON materials (owner_id)",
         "CREATE INDEX ix_tasks_owner_id ON tasks (owner_id)",
         "CREATE INDEX ix_proxies_owner_id ON proxies (owner_id)",
+        "ALTER TABLE materials ADD COLUMN group_id INT NULL",
+        "CREATE INDEX ix_materials_group_id ON materials (group_id)",
+        "ALTER TABLE materials ADD CONSTRAINT fk_materials_group FOREIGN KEY (group_id) REFERENCES material_groups(id) ON DELETE SET NULL",
+        "ALTER TABLE tasks ADD COLUMN send_type VARCHAR(20) NOT NULL DEFAULT 'single'",
+        "ALTER TABLE tasks ADD COLUMN material_group_id INT NULL",
+        "CREATE INDEX ix_tasks_send_type ON tasks (send_type)",
+        "CREATE INDEX ix_tasks_material_group_id ON tasks (material_group_id)",
+        "ALTER TABLE tasks ADD CONSTRAINT fk_tasks_material_group FOREIGN KEY (material_group_id) REFERENCES material_groups(id) ON DELETE SET NULL",
+        "ALTER TABLE customers ADD COLUMN is_favorite BOOLEAN NOT NULL DEFAULT FALSE",
+        "CREATE INDEX ix_customers_is_favorite ON customers (is_favorite)",
+        "ALTER TABLE sessions ADD COLUMN bidirectional_status VARCHAR(30) NOT NULL DEFAULT 'unchecked'",
+        "ALTER TABLE sessions ADD COLUMN bidirectional_detail TEXT NULL",
+        "ALTER TABLE sessions ADD COLUMN last_bidirectional_check_at DATETIME NULL",
+        "CREATE INDEX ix_sessions_bidirectional_status ON sessions (bidirectional_status)",
+        "ALTER TABLE material_groups ADD COLUMN color VARCHAR(20) NOT NULL DEFAULT 'blue'",
     ]
     with engine.begin() as connection:
         for statement in statements:
@@ -93,7 +129,7 @@ def run_lightweight_migrations() -> None:
     db = SessionLocal()
     try:
         _, test = ensure_default_users(db)
-        for table in ["session_groups", "sessions", "support_agents", "customer_profiles", "customers", "materials", "tasks", "proxies"]:
+        for table in ["session_groups", "sessions", "support_agents", "customer_profiles", "customers", "material_groups", "materials", "tasks", "proxies"]:
             db.execute(text(f"UPDATE {table} SET owner_id = :owner_id WHERE owner_id IS NULL"), {"owner_id": test.id})
         db.commit()
     finally:

@@ -1,7 +1,7 @@
 from app.models.message import Message
 from app.models.customer import Customer
 from app.models.customer_profile import CustomerProfile
-from app.models.material import Material
+from app.models.material import Material, MaterialGroup
 from app.models.proxy import ProxyConfig
 from app.models.session import SessionGroup, SessionLog, SessionStatus, SessionTaskLog, TelegramSession
 from app.models.support_agent import SupportAgent
@@ -13,6 +13,7 @@ __all__ = [
     "Customer",
     "CustomerProfile",
     "Material",
+    "MaterialGroup",
     "Message",
     "ProxyConfig",
     "SessionGroup",

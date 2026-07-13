@@ -6,7 +6,7 @@ from app.api import auth, customer_profiles, customers, materials, messages, pro
 from app.core.config import get_settings
 from app.core.database import Base, engine
 from app.core.migrations import run_lightweight_migrations
-from app.models import Customer, CustomerProfile, MarketingTask, Material, Message, ProxyConfig, SessionGroup, SessionLog, SessionTaskLog, SupportAgent, TelegramSession, User
+from app.models import Customer, CustomerProfile, MarketingTask, Material, MaterialGroup, Message, ProxyConfig, SessionGroup, SessionLog, SessionTaskLog, SupportAgent, TelegramSession, User
 from app.services.incoming_listener import incoming_message_listener
 
 settings = get_settings()

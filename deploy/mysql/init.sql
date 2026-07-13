@@ -41,6 +41,9 @@ CREATE TABLE IF NOT EXISTS sessions (
   last_health_check_at DATETIME NULL,
   health_status VARCHAR(50) NULL,
   error_message TEXT NULL,
+  bidirectional_status VARCHAR(30) NOT NULL DEFAULT 'unchecked',
+  bidirectional_detail TEXT NULL,
+  last_bidirectional_check_at DATETIME NULL,
   group_id INT NULL,
   kf_id INT NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -48,6 +51,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   INDEX ix_sessions_username (username),
   INDEX ix_sessions_phone (phone),
   INDEX ix_sessions_status (status),
+  INDEX ix_sessions_bidirectional_status (bidirectional_status),
   INDEX ix_sessions_group_id (group_id),
   INDEX ix_sessions_kf_id (kf_id),
   INDEX ix_sessions_status_group (status, group_id),
@@ -98,6 +102,7 @@ CREATE TABLE IF NOT EXISTS customers (
   kf_id INT NULL,
   send_status VARCHAR(30) NOT NULL DEFAULT 'pending',
   reply_status VARCHAR(30) NOT NULL DEFAULT 'not_replied',
+  is_favorite BOOLEAN NOT NULL DEFAULT FALSE,
   remark TEXT NULL,
   last_message_at DATETIME NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -108,6 +113,7 @@ CREATE TABLE IF NOT EXISTS customers (
   INDEX ix_customers_kf_id (kf_id),
   INDEX ix_customers_send_status (send_status),
   INDEX ix_customers_reply_status (reply_status),
+  INDEX ix_customers_is_favorite (is_favorite),
   INDEX ix_customers_last_message_at (last_message_at),
   INDEX ix_customers_created_at (created_at),
   INDEX ix_customers_phone_session (phone_number, assigned_session_id),
@@ -150,12 +156,27 @@ CREATE TABLE IF NOT EXISTS proxies (
   INDEX ix_proxies_created_at (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS material_groups (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  owner_id INT NULL,
+  name VARCHAR(150) NOT NULL,
+  color VARCHAR(20) NOT NULL DEFAULT 'blue',
+  remark TEXT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX ix_material_groups_owner_id (owner_id),
+  INDEX ix_material_groups_name (name),
+  INDEX ix_material_groups_created_at (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS tasks (
   id INT AUTO_INCREMENT PRIMARY KEY,
   name VARCHAR(150) NOT NULL,
   content TEXT NOT NULL,
   image_path VARCHAR(500) NULL,
   contact_card TEXT NULL,
+  send_type VARCHAR(20) NOT NULL DEFAULT 'single',
+  material_group_id INT NULL,
   session_group_id INT NULL,
   targets_text TEXT NOT NULL,
   messages_per_target INT NOT NULL DEFAULT 3,
@@ -169,13 +190,17 @@ CREATE TABLE IF NOT EXISTS tasks (
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   INDEX ix_tasks_name (name),
   INDEX ix_tasks_session_group_id (session_group_id),
+  INDEX ix_tasks_send_type (send_type),
+  INDEX ix_tasks_material_group_id (material_group_id),
   INDEX ix_tasks_status (status),
   INDEX ix_tasks_created_at (created_at),
-  CONSTRAINT fk_tasks_session_group FOREIGN KEY (session_group_id) REFERENCES session_groups(id) ON DELETE SET NULL
+  CONSTRAINT fk_tasks_session_group FOREIGN KEY (session_group_id) REFERENCES session_groups(id) ON DELETE SET NULL,
+  CONSTRAINT fk_tasks_material_group FOREIGN KEY (material_group_id) REFERENCES material_groups(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS materials (
   id INT AUTO_INCREMENT PRIMARY KEY,
+  group_id INT NULL,
   name VARCHAR(150) NOT NULL,
   material_type VARCHAR(20) NOT NULL,
   content TEXT NULL,
@@ -187,7 +212,9 @@ CREATE TABLE IF NOT EXISTS materials (
   INDEX ix_materials_name (name),
   INDEX ix_materials_material_type (material_type),
   INDEX ix_materials_priority (priority),
-  INDEX ix_materials_created_at (created_at)
+  INDEX ix_materials_group_id (group_id),
+  INDEX ix_materials_created_at (created_at),
+  CONSTRAINT fk_materials_group FOREIGN KEY (group_id) REFERENCES material_groups(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS session_task_logs (

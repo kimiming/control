@@ -10,6 +10,7 @@ from fastapi import UploadFile
 from openpyxl import load_workbook
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, object_session
+from telethon import events
 
 from app.core.config import get_settings
 from app.core.telegram import build_client
@@ -293,6 +294,94 @@ class SessionService:
             await self.publish_status(session, "status_changed")
         return {"checked": checked}
 
+    async def check_bidirectional_status(self, db: Session, session_id: int, owner_id: int | None = None) -> TelegramSession:
+        session = db.get(TelegramSession, session_id)
+        if not session or (owner_id is not None and session.owner_id != owner_id):
+            raise ValueError("Session not found")
+
+        from app.services.incoming_listener import incoming_message_listener
+
+        session.bidirectional_status = "checking"
+        session.bidirectional_detail = None
+        db.commit()
+        db.refresh(session)
+        await self.publish_status(session, "bidirectional_checking")
+
+        client = None
+        handler = None
+        future: asyncio.Future[str] | None = None
+        await incoming_message_listener.pause_session(session.id)
+        try:
+            client = build_client(session.session_name, proxy_service.get_proxy_url_for_session(db, session))
+            await asyncio.wait_for(client.connect(), timeout=10)
+            if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
+                session.bidirectional_status = "unauthorized"
+                session.bidirectional_detail = "Telegram Session 未授权，无法联系 @SpamBot。"
+            else:
+                loop = asyncio.get_running_loop()
+                future = loop.create_future()
+
+                async def spam_bot_handler(event: Any) -> None:
+                    if future and not future.done():
+                        future.set_result(event.message.text or "")
+
+                handler = spam_bot_handler
+                client.add_event_handler(handler, events.NewMessage(chats="@SpamBot"))
+                await asyncio.wait_for(client.send_message("@SpamBot", "/start"), timeout=10)
+                response_text = await asyncio.wait_for(future, timeout=10)
+                session.bidirectional_detail = response_text[:10000]
+                if "Good news" in response_text or "no limits" in response_text.lower():
+                    session.bidirectional_status = "normal"
+                else:
+                    session.bidirectional_status = "restricted"
+        except asyncio.TimeoutError:
+            session.bidirectional_status = "timeout"
+            session.bidirectional_detail = "检测超时：@SpamBot 在 10 秒内没有回应，或 Telegram 连接超时。"
+        except Exception as exc:
+            session.bidirectional_status = "error"
+            session.bidirectional_detail = str(exc)[:10000]
+        finally:
+            if client and handler:
+                client.remove_event_handler(handler)
+            try:
+                if client and client.is_connected():
+                    await client.disconnect()
+            except Exception:
+                pass
+            await incoming_message_listener.resume_session(session.id)
+
+        session.last_bidirectional_check_at = datetime.utcnow()
+        self.log(
+            db,
+            session.id,
+            "bidirectional_check",
+            f"{session.bidirectional_status}: {session.bidirectional_detail or '-'}"[:10000],
+        )
+        db.commit()
+        db.refresh(session)
+        await self.publish_status(session, "bidirectional_checked")
+        return session
+
+    async def check_all_bidirectional_statuses(self, db: Session, owner_id: int | None = None) -> dict[str, int]:
+        stmt = select(TelegramSession.id).order_by(TelegramSession.created_at.asc(), TelegramSession.id.asc())
+        if owner_id is not None:
+            stmt = stmt.where(TelegramSession.owner_id == owner_id)
+        session_ids = list(db.scalars(stmt).all())
+        summary = {
+            "checked": 0,
+            "normal": 0,
+            "restricted": 0,
+            "timeout": 0,
+            "unauthorized": 0,
+            "error": 0,
+        }
+        for session_id in session_ids:
+            session = await self.check_bidirectional_status(db, session_id, owner_id)
+            summary["checked"] += 1
+            status = session.bidirectional_status or "error"
+            summary[status if status in summary else "error"] += 1
+        return summary
+
     def list_logs(self, db: Session, session_id: int | None = None, limit: int = 100, owner_id: int | None = None) -> list[SessionLog]:
         stmt = select(SessionLog).order_by(SessionLog.created_at.desc()).limit(limit)
         if owner_id is not None:
@@ -337,6 +426,9 @@ class SessionService:
             "last_health_check_at": session.last_health_check_at.isoformat() if session.last_health_check_at else None,
             "health_status": session.health_status,
             "error_message": session.error_message,
+            "bidirectional_status": session.bidirectional_status or "unchecked",
+            "bidirectional_detail": session.bidirectional_detail,
+            "last_bidirectional_check_at": session.last_bidirectional_check_at.isoformat() if session.last_bidirectional_check_at else None,
             "group_id": session.group_id,
             "group_name": session.group.name if session.group else None,
             "group_color": session.group.color if session.group else None,
