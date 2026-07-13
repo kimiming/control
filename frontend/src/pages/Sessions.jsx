@@ -1,4 +1,4 @@
-import { CheckCircleOutlined, DeleteOutlined, ImportOutlined, LinkOutlined, SafetyCertificateOutlined, TeamOutlined } from '@ant-design/icons';
+import { CheckCircleOutlined, DeleteOutlined, DisconnectOutlined, ImportOutlined, LinkOutlined, SafetyCertificateOutlined, TeamOutlined } from '@ant-design/icons';
 import { Button, Card, Drawer, Form, Input, Modal, Popconfirm, Radio, Select, Space, Table, Tag, Upload, message } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import dayjs from 'dayjs';
@@ -8,6 +8,7 @@ import {
   createGroup,
   createSession,
   deleteSession,
+  disconnectSessions,
   getGroups,
   getSessionLogs,
   getSessionTaskLogs,
@@ -167,6 +168,19 @@ export default function Sessions() {
     },
     onError: (error) => {
       message.error(error.message || '批量连接失败');
+      queryClient.invalidateQueries({ queryKey: ['sessions'] });
+    },
+  });
+
+  const batchDisconnectMutation = useMutation({
+    mutationFn: () => disconnectSessions(selectedRowKeys),
+    onSuccess: (data) => {
+      message.success(`已断开 ${data.disconnected} 个Session`);
+      queryClient.invalidateQueries({ queryKey: ['sessions'] });
+      setSelectedRowKeys([]);
+    },
+    onError: (error) => {
+      message.error(error?.response?.data?.detail || error.message || '批量断开失败');
       queryClient.invalidateQueries({ queryKey: ['sessions'] });
     },
   });
@@ -357,12 +371,26 @@ export default function Sessions() {
           </Popconfirm>
           <Button
             icon={<LinkOutlined />}
-            disabled={!selectedRowKeys.length}
+            disabled={!selectedRowKeys.length || batchDisconnectMutation.isPending}
             loading={batchConnectMutation.isPending}
             onClick={() => batchConnectMutation.mutate()}
           >
             批量连接
           </Button>
+          <Popconfirm
+            title={`确认断开选中的 ${selectedRowKeys.length} 个Session？`}
+            description="断开后将停止消息监听，并保持未连接状态，直到再次手动连接。"
+            disabled={!selectedRowKeys.length}
+            onConfirm={() => batchDisconnectMutation.mutate()}
+          >
+            <Button
+              icon={<DisconnectOutlined />}
+              disabled={!selectedRowKeys.length || batchConnectMutation.isPending}
+              loading={batchDisconnectMutation.isPending}
+            >
+              批量断开
+            </Button>
+          </Popconfirm>
           <Button
             icon={<TeamOutlined />}
             onClick={() => {
@@ -505,7 +533,7 @@ export default function Sessions() {
           pagination={{ pageSize: 20 }}
           columns={[
             { title: '任务', dataIndex: 'task_name', width: 180 },
-            { title: '目标手机号', dataIndex: 'target_phone', width: 150 },
+            { title: '目标客户', dataIndex: 'target_phone', width: 150 },
             {
               title: '结果',
               dataIndex: 'status',

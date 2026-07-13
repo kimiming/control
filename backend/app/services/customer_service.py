@@ -19,6 +19,7 @@ from app.models.session import SessionStatus, TelegramSession
 from app.models.support_agent import SupportAgent
 from app.services.material_service import material_service
 from app.services.proxy_service import proxy_service
+from app.services.target_parser import normalize_username
 
 
 class CustomerService:
@@ -47,7 +48,14 @@ class CustomerService:
             stmt = stmt.where(Customer.is_favorite == is_favorite)
         if keyword:
             like = f"%{keyword}%"
-            stmt = stmt.where(or_(Customer.phone_number.like(like), Customer.nickname.like(like), Customer.tg_id.like(like)))
+            stmt = stmt.where(
+                or_(
+                    Customer.phone_number.like(like),
+                    Customer.username.like(like),
+                    Customer.nickname.like(like),
+                    Customer.tg_id.like(like),
+                )
+            )
         stmt = stmt.order_by(Customer.last_message_at.is_(None), Customer.last_message_at.desc(), Customer.updated_at.desc())
         return [self.serialize_customer(db, customer, session, agent) for customer, session, agent in db.execute(stmt).all()]
 
@@ -66,7 +74,7 @@ class CustomerService:
 
     async def list_messages(self, db: Session, customer_id: int, limit: int = 100, owner_id: int | None = None) -> list[Message]:
         customer = self.get_customer(db, customer_id, owner_id)
-        chat_key = customer.tg_id or customer.phone_number
+        chat_key = self._chat_key(customer)
         stmt = (
             select(Message)
             .where(Message.session_id == customer.assigned_session_id, Message.chat_id == chat_key)
@@ -105,7 +113,7 @@ class CustomerService:
 
         material = material_service.get_material(db, material_id, owner_id) if material_id else None
         content, image_path, telegram_message_id = await self._send_reply(session, customer, text, material, proxy_service.get_proxy_url_for_session(db, session))
-        chat_key = customer.tg_id or customer.phone_number
+        chat_key = self._chat_key(customer)
         db.add(
             Message(
                 session_id=session.id,
@@ -126,30 +134,41 @@ class CustomerService:
     def upsert_customer_from_task(
         self,
         db: Session,
-        phone: str,
+        target: str,
+        target_type: str,
         session: TelegramSession,
         tg_id: str | None = None,
         nickname: str | None = None,
         access_hash: str | None = None,
+        username: str | None = None,
+        phone_number: str | None = None,
         owner_id: int | None = None,
     ) -> Customer:
-        customer = db.scalar(
-            select(Customer).where(Customer.phone_number == phone, Customer.assigned_session_id == session.id, Customer.owner_id == owner_id)
-        )
+        username = normalize_username(username) or (normalize_username(target) if target_type == "username" else None)
+        phone_number = phone_number or (target if target_type == "phone" else None)
+        stmt = select(Customer).where(Customer.assigned_session_id == session.id, Customer.owner_id == owner_id)
+        if tg_id:
+            customer = db.scalar(stmt.where(Customer.tg_id == tg_id))
+        elif target_type == "username":
+            customer = db.scalar(stmt.where(Customer.username == username))
+        else:
+            customer = db.scalar(stmt.where(Customer.phone_number == phone_number))
         if not customer:
-            customer = Customer(owner_id=owner_id, phone_number=phone, assigned_session_id=session.id)
+            customer = Customer(owner_id=owner_id, phone_number=phone_number, username=username, assigned_session_id=session.id)
             db.add(customer)
         customer.kf_id = session.kf_id
         customer.tg_id = tg_id or customer.tg_id
         customer.access_hash = access_hash or customer.access_hash
-        customer.nickname = nickname or customer.nickname or phone
+        customer.username = username or customer.username
+        customer.phone_number = phone_number or customer.phone_number
+        customer.nickname = nickname or customer.nickname or username or phone_number or target
         customer.send_status = "success"
         customer.last_message_at = datetime.utcnow()
         db.flush()
         return customer
 
     def unread_count(self, db: Session, customer: Customer) -> int:
-        chat_key = customer.tg_id or customer.phone_number
+        chat_key = self._chat_key(customer)
         return db.scalar(
             select(func.count(Message.id)).where(
                 Message.session_id == customer.assigned_session_id,
@@ -169,6 +188,7 @@ class CustomerService:
         return {
             "id": customer.id,
             "phone_number": customer.phone_number,
+            "username": customer.username,
             "tg_id": customer.tg_id,
             "nickname": customer.nickname,
             "avatar": customer.avatar,
@@ -219,8 +239,8 @@ class CustomerService:
                 raise RuntimeError("Session is not authorized")
             entity = await self._resolve_customer_entity(client, customer)
             await self._send_read_acknowledge(client, entity)
-            content, image_path = await self._send_reply_payload(client, entity, text, material)
-            return content, image_path
+            content, image_path, telegram_message_id = await self._send_reply_payload(client, entity, text, material)
+            return content, image_path, telegram_message_id
         finally:
             if client.is_connected():
                 await client.disconnect()
@@ -357,7 +377,10 @@ class CustomerService:
                 pass
         if customer.tg_id:
             candidates.append(int(customer.tg_id) if customer.tg_id.isdigit() else customer.tg_id)
-        candidates.append(customer.phone_number)
+        if customer.username:
+            candidates.append(customer.username)
+        if customer.phone_number:
+            candidates.append(customer.phone_number)
 
         for candidate in candidates:
             try:
@@ -365,11 +388,19 @@ class CustomerService:
             except Exception:
                 continue
 
+        if not customer.phone_number:
+            raise RuntimeError("Customer username is not available on Telegram")
         contact = InputPhoneContact(client_id=0, phone=customer.phone_number, first_name=customer.phone_number, last_name="")
         result = await asyncio.wait_for(client(ImportContactsRequest([contact])), timeout=15)
         if not result.users:
             raise RuntimeError("Customer is not available on Telegram")
         return result.users[0]
+
+    def _chat_key(self, customer: Customer) -> str:
+        value = customer.tg_id or customer.username or customer.phone_number
+        if not value:
+            raise ValueError("Customer has no Telegram identifier")
+        return value
 
 
 customer_service = CustomerService()

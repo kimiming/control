@@ -74,7 +74,7 @@ class SessionTaskLog(Base):
     session_id: Mapped[int | None] = mapped_column(ForeignKey("sessions.id", ondelete="SET NULL"), nullable=True, index=True)
     task_id: Mapped[int | None] = mapped_column(ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True, index=True)
     task_name: Mapped[str] = mapped_column(String(150), index=True)
-    target_phone: Mapped[str] = mapped_column(String(32), index=True)
+    target_phone: Mapped[str] = mapped_column(String(100), index=True)
     status: Mapped[str] = mapped_column(String(30), index=True)
     message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)

@@ -1,4 +1,4 @@
-import { DeleteOutlined, EditOutlined, EyeOutlined, FileTextOutlined, PlayCircleOutlined, PlusOutlined } from '@ant-design/icons';
+import { DeleteOutlined, DownloadOutlined, EditOutlined, EyeOutlined, FileTextOutlined, PlayCircleOutlined, PlusOutlined } from '@ant-design/icons';
 import {
   Button,
   Descriptions,
@@ -24,7 +24,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import dayjs from 'dayjs';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
-import { createTask, deleteTask, executeTask, getCustomerProfiles, getGroups, getMaterialGroups, getMaterials, getTaskLogs, getTasks, updateTask } from '../api/index.js';
+import { createTask, deleteTask, executeTask, exportTaskRemainingTargets, getCustomerProfiles, getGroups, getMaterialGroups, getMaterials, getTaskLogs, getTasks, updateTask } from '../api/index.js';
 
 const statusColor = {
   draft: 'default',
@@ -46,8 +46,11 @@ const buildTaskFormData = (values) => {
   const formData = new FormData();
   formData.append('name', values.name);
   formData.append('send_type', values.send_type || 'single');
+  formData.append('target_type', values.target_type || 'phone');
   if (values.send_type === 'group') {
     if (values.material_group_id) formData.append('material_group_id', values.material_group_id);
+  } else if (values.send_type === 'concat') {
+    formData.append('material_group_ids', JSON.stringify(values.material_group_ids || []));
   } else if (values.content_mode !== 'material') {
     formData.append('content', values.content || '');
   }
@@ -55,20 +58,20 @@ const buildTaskFormData = (values) => {
     formData.append('session_group_id', values.session_group_id);
   }
   formData.append('messages_per_target', values.messages_per_target ?? 3);
-  if (values.send_type !== 'group' && values.content_mode === 'material' && values.content_material_id) {
+  if (values.send_type === 'single' && values.content_mode === 'material' && values.content_material_id) {
     formData.append('content_material_id', values.content_material_id);
   }
-  if (values.send_type !== 'group' && values.image_mode === 'material' && values.image_material_id) {
+  if (values.send_type === 'single' && values.image_mode === 'material' && values.image_material_id) {
     formData.append('image_material_id', values.image_material_id);
   }
-  if (values.send_type !== 'group' && values.contact_material_id) {
+  if (values.send_type === 'single' && values.contact_material_id) {
     formData.append('contact_material_id', values.contact_material_id);
   }
   if (values.targets_mode === 'profile' && values.customer_profile_id) {
     formData.append('customer_profile_id', values.customer_profile_id);
   }
 
-  const imageFile = values.send_type === 'group' ? null : values.image?.[0]?.originFileObj;
+  const imageFile = values.send_type === 'single' ? values.image?.[0]?.originFileObj : null;
   const targetsFile = values.targets_mode === 'profile' ? null : values.targets_file?.[0]?.originFileObj;
   if (imageFile) formData.append('image', imageFile);
   if (targetsFile) formData.append('targets_file', targetsFile);
@@ -110,6 +113,7 @@ export default function Tasks() {
   const contentMode = Form.useWatch('content_mode', form);
   const imageMode = Form.useWatch('image_mode', form);
   const targetsMode = Form.useWatch('targets_mode', form);
+  const targetType = Form.useWatch('target_type', form);
   const sendType = Form.useWatch('send_type', form);
 
   useEffect(() => {
@@ -122,13 +126,15 @@ export default function Tasks() {
         image_mode: 'manual',
         send_type: editing.send_type || 'single',
         material_group_id: editing.material_group_id,
+        material_group_ids: editing.material_group_ids || [],
         targets_mode: 'manual',
+        target_type: editing.target_type || 'phone',
         session_group_id: editing.session_group_id,
         messages_per_target: editing.messages_per_target,
         contact_material_id: editing.contact_card ? '__existing__' : undefined,
       });
     } else {
-      form.setFieldsValue({ messages_per_target: 3, send_type: 'single', content_mode: 'manual', image_mode: 'manual', targets_mode: 'manual' });
+      form.setFieldsValue({ messages_per_target: 3, send_type: 'single', content_mode: 'manual', image_mode: 'manual', targets_mode: 'manual', target_type: 'phone' });
     }
   }, [editing, form, modalOpen]);
 
@@ -219,13 +225,52 @@ export default function Tasks() {
     },
   });
 
+  const exportRemainingMutation = useMutation({
+    mutationFn: (task) => exportTaskRemainingTargets(task.id),
+    onSuccess: ({ blob, count }, task) => {
+      if (!count) {
+        message.info('该任务没有未发完的客户资料');
+        return;
+      }
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      const safeName = task.name.replace(/[\\/:*?"<>|]/g, '_');
+      link.href = url;
+      link.download = `${safeName}-未发完客户资料-${count}条.txt`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      message.success(`已导出 ${count} 个未处理客户`);
+    },
+    onError: async (error) => {
+      let detail = error?.response?.data?.detail;
+      if (error?.response?.data instanceof Blob) {
+        try {
+          detail = JSON.parse(await error.response.data.text()).detail;
+        } catch {
+          detail = null;
+        }
+      }
+      message.error(detail || error.message || '导出失败');
+    },
+  });
+
   const columns = [
     { title: '任务名称', dataIndex: 'name', width: 180 },
     {
       title: '素材发送类型',
       dataIndex: 'send_type',
       width: 140,
-      render: (value, record) => (value === 'group' ? `组合：${materialGroupNameMap.get(record.material_group_id) || '分组已删除'}` : '单项发送'),
+      ellipsis: true,
+      render: (value, record) => {
+        if (value === 'group') return `组合：${materialGroupNameMap.get(record.material_group_id) || '分组已删除'}`;
+        if (value === 'concat') {
+          const names = (record.material_group_ids || []).map((id) => materialGroupNameMap.get(id) || '分组已删除');
+          return `拼接：${names.join(' + ') || '-'}`;
+        }
+        return '单项发送';
+      },
     },
     {
       title: '文字内容',
@@ -237,6 +282,12 @@ export default function Tasks() {
       dataIndex: 'session_group_id',
       width: 140,
       render: (value) => (value ? groupNameMap.get(value) || value : '全部已连接'),
+    },
+    {
+      title: '目标类型',
+      dataIndex: 'target_type',
+      width: 100,
+      render: (value) => <Tag color={value === 'username' ? 'purple' : 'blue'}>{value === 'username' ? '用户名' : '手机号'}</Tag>,
     },
     { title: '目标数', dataIndex: 'total_targets', width: 90 },
     { title: '每Session条数', dataIndex: 'messages_per_target', width: 120 },
@@ -337,7 +388,11 @@ export default function Tasks() {
               message.error('请选择素材分组');
               return;
             }
-            if (values.send_type !== 'group') {
+            if (values.send_type === 'concat' && (values.material_group_ids || []).length < 2) {
+              message.error('拼接发送至少选择两个文字素材分组');
+              return;
+            }
+            if (values.send_type === 'single') {
               const hasText = values.content_mode === 'material' ? Boolean(values.content_material_id) : Boolean(values.content?.trim());
               const hasImage = values.image_mode === 'material' ? Boolean(values.image_material_id) : Boolean(values.image?.[0]?.originFileObj || editing?.image_path);
               const hasContact = Boolean(values.contact_material_id) || Boolean(editing?.contact_card);
@@ -361,19 +416,39 @@ export default function Tasks() {
             <Radio.Group>
               <Radio value="single">单项发送</Radio>
               <Radio value="group">组合发送</Radio>
+              <Radio value="concat">拼接发送</Radio>
             </Radio.Group>
           </Form.Item>
           {sendType === 'group' ? (
             <Form.Item
               name="material_group_id"
               label="选择素材分组"
-              extra="每个目标都会发送分组内全部素材；优先级越高越可能先发送，同优先级随机排列。"
+              extra="每个客户只随机发送分组内一条素材；优先级越高越可能先被抽取，一轮内所有素材发送成功后再重新随机。"
               rules={[{ required: true, message: '请选择素材分组' }]}
             >
               <Select
                 showSearch
                 optionFilterProp="label"
                 options={materialGroups.map((group) => ({ value: group.id, label: `${group.name}（${group.material_count}条素材）`, disabled: !group.material_count }))}
+              />
+            </Form.Item>
+          ) : sendType === 'concat' ? (
+            <Form.Item
+              name="material_group_ids"
+              label="选择拼接素材分组"
+              extra="按选择顺序，每个分组仅从文字素材中按优先级加权随机抽取一条，再用换行拼成一条消息。"
+              rules={[{ required: true, type: 'array', min: 2, message: '至少选择两个文字素材分组' }]}
+            >
+              <Select
+                mode="multiple"
+                showSearch
+                optionFilterProp="label"
+                placeholder="请按拼接顺序选择至少两个分组"
+                options={materialGroups.map((group) => ({
+                  value: group.id,
+                  label: `${group.name}（${group.text_count || 0}条文字）`,
+                  disabled: !group.text_count,
+                }))}
               />
             </Form.Item>
           ) : (
@@ -446,12 +521,25 @@ export default function Tasks() {
               <Radio value="profile">选择客户资料</Radio>
             </Radio.Group>
           </Form.Item>
+          <Form.Item name="target_type" label="目标类型" rules={[{ required: true, message: '请选择目标类型' }]}>
+            <Radio.Group
+              onChange={() => {
+                form.setFieldValue('customer_profile_id', undefined);
+                form.setFieldValue('targets_file', undefined);
+              }}
+            >
+              <Radio value="phone">手机号</Radio>
+              <Radio value="username">用户名</Radio>
+            </Radio.Group>
+          </Form.Item>
           {targetsMode === 'profile' ? (
             <Form.Item name="customer_profile_id" label="客户资料" rules={[{ required: true, message: '请选择客户资料' }]}>
               <Select
                 showSearch
                 optionFilterProp="label"
-                options={customerProfiles.map((item) => ({ value: item.id, label: `${item.name}（${item.total_count}个号码）` }))}
+                options={customerProfiles
+                  .filter((item) => (item.target_type || 'phone') === (targetType || 'phone'))
+                  .map((item) => ({ value: item.id, label: `${item.name}（${item.total_count}个）` }))}
               />
             </Form.Item>
           ) : (
@@ -460,7 +548,7 @@ export default function Tasks() {
               label="导入TXT"
               valuePropName="fileList"
               getValueFromEvent={normFile}
-              rules={[{ required: !editing, message: '请导入手机号txt文件' }]}
+              rules={[{ required: !editing, message: `请导入${targetType === 'username' ? '用户名' : '手机号'}TXT文件` }]}
             >
               <Upload accept=".txt" maxCount={1} beforeUpload={() => false}>
                 <Button>导入TXT</Button>
@@ -476,12 +564,27 @@ export default function Tasks() {
       <Drawer title="任务详情" open={Boolean(viewing)} onClose={() => setViewing(null)} width={720}>
         {viewing ? (
           <Space direction="vertical" size={16} style={{ width: '100%' }}>
+            {['completed', 'completed_with_errors', 'failed'].includes(viewing.status) ? (
+              <Button
+                type="primary"
+                icon={<DownloadOutlined />}
+                loading={exportRemainingMutation.isPending}
+                onClick={() => exportRemainingMutation.mutate(viewing)}
+              >
+                导出未发完的客户资料
+              </Button>
+            ) : null}
             <Descriptions column={1} bordered size="small">
               <Descriptions.Item label="任务名称">{viewing.name}</Descriptions.Item>
               <Descriptions.Item label="素材发送类型">
-                {viewing.send_type === 'group' ? `组合发送：${materialGroupNameMap.get(viewing.material_group_id) || '分组已删除'}` : '单项发送'}
+                {viewing.send_type === 'group'
+                  ? `组合发送：${materialGroupNameMap.get(viewing.material_group_id) || '分组已删除'}`
+                  : viewing.send_type === 'concat'
+                    ? `拼接发送：${(viewing.material_group_ids || []).map((id) => materialGroupNameMap.get(id) || '分组已删除').join(' + ')}`
+                    : '单项发送'}
               </Descriptions.Item>
               <Descriptions.Item label="Session分类">{viewing.session_group_id ? groupNameMap.get(viewing.session_group_id) || viewing.session_group_id : '全部已连接'}</Descriptions.Item>
+              <Descriptions.Item label="目标类型">{viewing.target_type === 'username' ? '用户名' : '手机号'}</Descriptions.Item>
               <Descriptions.Item label="每Session条数">{viewing.messages_per_target}</Descriptions.Item>
               <Descriptions.Item label="目标数">{viewing.total_targets}</Descriptions.Item>
               <Descriptions.Item label="状态">{statusText[viewing.status] || viewing.status}</Descriptions.Item>
@@ -489,15 +592,15 @@ export default function Tasks() {
               <Descriptions.Item label="最后执行">{viewing.last_run_at ? dayjs(viewing.last_run_at).format('YYYY-MM-DD HH:mm:ss') : '-'}</Descriptions.Item>
               <Descriptions.Item label="错误">{viewing.error_message || '-'}</Descriptions.Item>
             </Descriptions>
-            {viewing.send_type !== 'group' && viewing.image_path ? <Image src={viewing.image_path} width={220} /> : null}
-            {viewing.send_type !== 'group' && viewing.contact_card ? (
+            {viewing.send_type === 'single' && viewing.image_path ? <Image src={viewing.image_path} width={220} /> : null}
+            {viewing.send_type === 'single' && viewing.contact_card ? (
               <Descriptions column={1} bordered size="small">
                 <Descriptions.Item label="名片手机号">{viewing.contact_card.phone_number || '-'}</Descriptions.Item>
                 <Descriptions.Item label="名">{viewing.contact_card.first_name || '-'}</Descriptions.Item>
                 <Descriptions.Item label="姓">{viewing.contact_card.last_name || '-'}</Descriptions.Item>
               </Descriptions>
             ) : null}
-            {viewing.send_type !== 'group' ? <Input.TextArea value={viewing.content} rows={5} readOnly /> : null}
+            {viewing.send_type === 'single' ? <Input.TextArea value={viewing.content} rows={5} readOnly /> : null}
             <Input.TextArea value={(viewing.targets || []).join('\n')} rows={8} readOnly />
           </Space>
         ) : null}
@@ -527,7 +630,7 @@ export default function Tasks() {
                 </Space>
               ),
             },
-            { title: '目标客户', dataIndex: 'target_phone', width: 160 },
+            { title: '目标客户', dataIndex: 'target_customer', width: 160 },
             {
               title: '发送结果',
               dataIndex: 'status',

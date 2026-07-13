@@ -11,7 +11,8 @@ class Customer(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     owner_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
-    phone_number: Mapped[str] = mapped_column(String(32), index=True)
+    phone_number: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    username: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
     tg_id: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
     access_hash: Mapped[str | None] = mapped_column(String(100), nullable=True)
     nickname: Mapped[str | None] = mapped_column(String(150), nullable=True)

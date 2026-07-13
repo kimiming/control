@@ -165,11 +165,11 @@ export default function SessionList({
         <Space>
           {record.status === 'connected' ? (
             <Tooltip title="断开">
-              <Button icon={<DisconnectOutlined />} onClick={() => onDisconnect(record)} />
+              <Button type="primary" danger icon={<DisconnectOutlined />} onClick={() => onDisconnect(record)} />
             </Tooltip>
           ) : (
             <Tooltip title="连接">
-              <Button icon={<LinkOutlined />} onClick={() => onConnect(record)} loading={record.status === 'connecting'} />
+              <Button type="primary" icon={<LinkOutlined />} onClick={() => onConnect(record)} loading={record.status === 'connecting'} />
             </Tooltip>
           )}
           <Tooltip title="编辑">

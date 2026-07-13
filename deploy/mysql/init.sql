@@ -93,7 +93,8 @@ CREATE TABLE IF NOT EXISTS messages (
 
 CREATE TABLE IF NOT EXISTS customers (
   id INT AUTO_INCREMENT PRIMARY KEY,
-  phone_number VARCHAR(32) NOT NULL,
+  phone_number VARCHAR(32) NULL,
+  username VARCHAR(100) NULL,
   tg_id VARCHAR(100) NULL,
   access_hash VARCHAR(100) NULL,
   nickname VARCHAR(150) NULL,
@@ -108,6 +109,7 @@ CREATE TABLE IF NOT EXISTS customers (
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   INDEX ix_customers_phone_number (phone_number),
+  INDEX ix_customers_username (username),
   INDEX ix_customers_tg_id (tg_id),
   INDEX ix_customers_assigned_session_id (assigned_session_id),
   INDEX ix_customers_kf_id (kf_id),
@@ -123,12 +125,14 @@ CREATE TABLE IF NOT EXISTS customers (
 CREATE TABLE IF NOT EXISTS customer_profiles (
   id INT AUTO_INCREMENT PRIMARY KEY,
   name VARCHAR(150) NOT NULL,
+  target_type VARCHAR(20) NOT NULL DEFAULT 'phone',
   content TEXT NOT NULL,
   total_count INT NOT NULL DEFAULT 0,
   remark TEXT NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   INDEX ix_customer_profiles_name (name),
+  INDEX ix_customer_profiles_target_type (target_type),
   INDEX ix_customer_profiles_created_at (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -177,7 +181,9 @@ CREATE TABLE IF NOT EXISTS tasks (
   contact_card TEXT NULL,
   send_type VARCHAR(20) NOT NULL DEFAULT 'single',
   material_group_id INT NULL,
+  material_group_ids TEXT NULL,
   session_group_id INT NULL,
+  target_type VARCHAR(20) NOT NULL DEFAULT 'phone',
   targets_text TEXT NOT NULL,
   messages_per_target INT NOT NULL DEFAULT 3,
   status VARCHAR(50) NOT NULL DEFAULT 'draft',
@@ -190,6 +196,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   INDEX ix_tasks_name (name),
   INDEX ix_tasks_session_group_id (session_group_id),
+  INDEX ix_tasks_target_type (target_type),
   INDEX ix_tasks_send_type (send_type),
   INDEX ix_tasks_material_group_id (material_group_id),
   INDEX ix_tasks_status (status),
@@ -222,7 +229,7 @@ CREATE TABLE IF NOT EXISTS session_task_logs (
   session_id INT NULL,
   task_id INT NULL,
   task_name VARCHAR(150) NOT NULL,
-  target_phone VARCHAR(32) NOT NULL,
+  target_phone VARCHAR(100) NOT NULL,
   status VARCHAR(30) NOT NULL,
   message TEXT NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,

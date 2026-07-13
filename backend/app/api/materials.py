@@ -37,10 +37,13 @@ def list_materials(material_type: str | None = None, db: Session = Depends(get_d
 def list_material_groups(db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> list[dict[str, Any]]:
     groups = material_service.list_groups(db, user.id)
     counts: dict[int, int] = {}
+    type_counts: dict[int, dict[str, int]] = {}
     for material in material_service.list_materials(db, owner_id=user.id):
         if material.group_id is not None:
             counts[material.group_id] = counts.get(material.group_id, 0) + 1
-    return [material_service.serialize_group(group, counts.get(group.id, 0)) for group in groups]
+            group_type_counts = type_counts.setdefault(material.group_id, {})
+            group_type_counts[material.material_type] = group_type_counts.get(material.material_type, 0) + 1
+    return [material_service.serialize_group(group, counts.get(group.id, 0), type_counts.get(group.id)) for group in groups]
 
 
 @router.post("/groups")

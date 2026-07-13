@@ -1,5 +1,5 @@
 import { DeleteOutlined, EditOutlined, EyeOutlined, PlusOutlined } from '@ant-design/icons';
-import { Button, Drawer, Form, Input, Modal, Popconfirm, Space, Table, Tooltip, Upload, message } from 'antd';
+import { Button, Drawer, Form, Input, Modal, Popconfirm, Radio, Space, Table, Tag, Tooltip, Upload, message } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import dayjs from 'dayjs';
 import { useEffect, useState } from 'react';
@@ -17,6 +17,7 @@ const normFile = (event) => (Array.isArray(event) ? event : event?.fileList);
 const buildFormData = (values) => {
   const formData = new FormData();
   formData.append('name', values.name);
+  formData.append('target_type', values.target_type || 'phone');
   if (values.remark) formData.append('remark', values.remark);
   const file = values.file?.[0]?.originFileObj;
   if (file) formData.append('file', file);
@@ -40,7 +41,9 @@ export default function CustomerProfiles() {
   useEffect(() => {
     form.resetFields();
     if (editing) {
-      form.setFieldsValue({ name: editing.name, remark: editing.remark });
+      form.setFieldsValue({ name: editing.name, target_type: editing.target_type || 'phone', remark: editing.remark });
+    } else {
+      form.setFieldsValue({ target_type: 'phone' });
     }
   }, [editing, form, modalOpen]);
 
@@ -70,7 +73,13 @@ export default function CustomerProfiles() {
   const columns = [
     { title: '编号', dataIndex: 'id', width: 90 },
     { title: '名称', dataIndex: 'name', width: 220 },
-    { title: '号码数量', dataIndex: 'total_count', width: 120 },
+    {
+      title: '类型',
+      dataIndex: 'target_type',
+      width: 110,
+      render: (value) => <Tag color={value === 'username' ? 'purple' : 'blue'}>{value === 'username' ? '用户名' : '手机号'}</Tag>,
+    },
+    { title: '数量', dataIndex: 'total_count', width: 100 },
     { title: '备注', dataIndex: 'remark', ellipsis: true, render: (value) => value || '-' },
     {
       title: '创建时间',
@@ -125,9 +134,15 @@ export default function CustomerProfiles() {
           <Form.Item name="name" label="名称" rules={[{ required: true, message: '请输入名称' }]}>
             <Input maxLength={150} />
           </Form.Item>
+          <Form.Item name="target_type" label="客户类型" rules={[{ required: true, message: '请选择客户类型' }]}>
+            <Radio.Group>
+              <Radio value="phone">手机号</Radio>
+              <Radio value="username">用户名</Radio>
+            </Radio.Group>
+          </Form.Item>
           <Form.Item
             name="file"
-            label="客户手机号TXT"
+            label="客户TXT"
             valuePropName="fileList"
             getValueFromEvent={normFile}
             rules={[{ required: !editing, message: '请上传TXT文件' }]}
@@ -146,7 +161,8 @@ export default function CustomerProfiles() {
         {viewing ? (
           <Space direction="vertical" size={12} style={{ width: '100%' }}>
             <Input value={viewing.name} readOnly />
-            <Input value={`号码数量：${viewing.total_count}`} readOnly />
+            <Input value={`类型：${viewing.target_type === 'username' ? '用户名' : '手机号'}`} readOnly />
+            <Input value={`数量：${viewing.total_count}`} readOnly />
             <Input.TextArea value={viewing.content || ''} rows={18} readOnly />
           </Space>
         ) : null}

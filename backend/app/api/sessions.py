@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from app.core.auth import get_current_user
 from app.core.database import get_db
 from app.models.user import User
-from app.schemas.session import GroupCreate, MoveSessions, MoveSessionsToAgent, MoveSessionsToProxy, SessionCreate, SessionUpdate
+from app.schemas.session import GroupCreate, MoveSessions, MoveSessionsToAgent, MoveSessionsToProxy, SessionCreate, SessionIds, SessionUpdate
 from app.services.session_service import session_service
 from app.services.proxy_service import proxy_service
 from app.services.websocket_manager import session_ws_manager
@@ -99,6 +99,12 @@ async def move_sessions_to_proxy(payload: MoveSessionsToProxy, db: Session = Dep
     for session in sessions:
         await session_service.publish_status(session, "updated")
     return {"moved": moved}
+
+
+@router.post("/disconnect")
+async def disconnect_sessions(payload: SessionIds, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, int]:
+    disconnected = await session_service.disconnect_sessions(db, payload.session_ids, user.id)
+    return {"disconnected": disconnected}
 
 
 @router.post("/health-check")

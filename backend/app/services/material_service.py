@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from typing import Any
 
@@ -55,6 +56,13 @@ class MaterialService:
             material.group_id = None
         for task in db.scalars(select(MarketingTask).where(MarketingTask.material_group_id == group.id)).all():
             task.material_group_id = None
+        for task in db.scalars(select(MarketingTask).where(MarketingTask.material_group_ids.is_not(None))).all():
+            try:
+                group_ids = [int(item) for item in json.loads(task.material_group_ids or "[]")]
+            except (TypeError, ValueError, json.JSONDecodeError):
+                group_ids = []
+            if group.id in group_ids:
+                task.material_group_ids = json.dumps([item for item in group_ids if item != group.id])
         db.delete(group)
         db.commit()
 
@@ -176,13 +184,22 @@ class MaterialService:
             "updated_at": material.updated_at.isoformat() if material.updated_at else None,
         }
 
-    def serialize_group(self, group: MaterialGroup, material_count: int = 0) -> dict[str, Any]:
+    def serialize_group(
+        self,
+        group: MaterialGroup,
+        material_count: int = 0,
+        type_counts: dict[str, int] | None = None,
+    ) -> dict[str, Any]:
+        type_counts = type_counts or {}
         return {
             "id": group.id,
             "name": group.name,
             "color": group.color or "blue",
             "remark": group.remark,
             "material_count": material_count,
+            "text_count": type_counts.get("text", 0),
+            "image_count": type_counts.get("image", 0),
+            "contact_count": type_counts.get("contact", 0),
             "created_at": group.created_at.isoformat() if group.created_at else None,
             "updated_at": group.updated_at.isoformat() if group.updated_at else None,
         }

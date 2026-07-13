@@ -20,6 +20,13 @@ def run_lightweight_migrations() -> None:
             "ALTER TABLE sessions ADD COLUMN last_bidirectional_check_at DATETIME NULL",
             "CREATE INDEX ix_sessions_bidirectional_status ON sessions (bidirectional_status)",
             "ALTER TABLE material_groups ADD COLUMN color VARCHAR(20) NOT NULL DEFAULT 'blue'",
+            "ALTER TABLE customer_profiles ADD COLUMN target_type VARCHAR(20) NOT NULL DEFAULT 'phone'",
+            "CREATE INDEX ix_customer_profiles_target_type ON customer_profiles (target_type)",
+            "ALTER TABLE tasks ADD COLUMN target_type VARCHAR(20) NOT NULL DEFAULT 'phone'",
+            "CREATE INDEX ix_tasks_target_type ON tasks (target_type)",
+            "ALTER TABLE customers ADD COLUMN username VARCHAR(100) NULL",
+            "CREATE INDEX ix_customers_username ON customers (username)",
+            "ALTER TABLE tasks ADD COLUMN material_group_ids TEXT NULL",
         ]
         with engine.begin() as connection:
             for statement in statements:
@@ -118,6 +125,15 @@ def run_lightweight_migrations() -> None:
         "ALTER TABLE sessions ADD COLUMN last_bidirectional_check_at DATETIME NULL",
         "CREATE INDEX ix_sessions_bidirectional_status ON sessions (bidirectional_status)",
         "ALTER TABLE material_groups ADD COLUMN color VARCHAR(20) NOT NULL DEFAULT 'blue'",
+        "ALTER TABLE customer_profiles ADD COLUMN target_type VARCHAR(20) NOT NULL DEFAULT 'phone'",
+        "CREATE INDEX ix_customer_profiles_target_type ON customer_profiles (target_type)",
+        "ALTER TABLE tasks ADD COLUMN target_type VARCHAR(20) NOT NULL DEFAULT 'phone'",
+        "CREATE INDEX ix_tasks_target_type ON tasks (target_type)",
+        "ALTER TABLE customers ADD COLUMN username VARCHAR(100) NULL",
+        "CREATE INDEX ix_customers_username ON customers (username)",
+        "ALTER TABLE customers MODIFY COLUMN phone_number VARCHAR(32) NULL",
+        "ALTER TABLE session_task_logs MODIFY COLUMN target_phone VARCHAR(100) NOT NULL",
+        "ALTER TABLE tasks ADD COLUMN material_group_ids TEXT NULL",
     ]
     with engine.begin() as connection:
         for statement in statements:

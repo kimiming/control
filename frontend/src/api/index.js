@@ -53,6 +53,7 @@ export const createGroup = (data) => api.post('/sessions/groups', data).then((re
 export const moveSessions = (data) => api.post('/sessions/move', data).then((res) => res.data);
 export const moveSessionsToAgent = (data) => api.post('/sessions/move-agent', data).then((res) => res.data);
 export const moveSessionsToProxy = (data) => api.post('/sessions/move-proxy', data).then((res) => res.data);
+export const disconnectSessions = (sessionIds) => api.post('/sessions/disconnect', { session_ids: sessionIds }).then((res) => res.data);
 export const runHealthCheck = () => api.post('/sessions/health-check').then((res) => res.data);
 export const checkSessionBidirectional = (id) => api.post(`/sessions/${id}/bidirectional-check`, null, { timeout: 60000 }).then((res) => res.data);
 export const checkAllSessionsBidirectional = () => api.post('/sessions/bidirectional-check', null, { timeout: 0 }).then((res) => res.data);
@@ -66,6 +67,10 @@ export const updateTask = (id, data) => api.put(`/tasks/${id}`, data).then((res)
 export const deleteTask = (id) => api.delete(`/tasks/${id}`).then((res) => res.data);
 export const executeTask = (id) => api.post(`/tasks/${id}/execute`, null, { timeout: 0 }).then((res) => res.data);
 export const getTaskLogs = (id, params) => api.get(`/tasks/${id}/logs`, { params }).then((res) => res.data);
+export const exportTaskRemainingTargets = (id) => api.get(`/tasks/${id}/remaining-targets`, { responseType: 'blob' }).then((res) => ({
+  blob: res.data,
+  count: Number(res.headers['x-remaining-count'] || 0),
+}));
 export const getMaterials = (params) => api.get('/materials', { params }).then((res) => res.data);
 export const createMaterial = (data) => api.post('/materials', data).then((res) => res.data);
 export const updateMaterial = (id, data) => api.put(`/materials/${id}`, data).then((res) => res.data);

@@ -12,6 +12,7 @@ class CustomerProfile(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     owner_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(150), index=True)
+    target_type: Mapped[str] = mapped_column(String(20), default="phone", index=True)
     content: Mapped[str] = mapped_column(Text)
     total_count: Mapped[int] = mapped_column(Integer, default=0)
     remark: Mapped[str | None] = mapped_column(Text, nullable=True)

@@ -1,6 +1,8 @@
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 from app.core.auth import get_current_user
@@ -37,6 +39,8 @@ async def create_task(
     contact_material_id: int | None = Form(None),
     send_type: str = Form("single"),
     material_group_id: int | None = Form(None),
+    material_group_ids: str | None = Form(None),
+    target_type: str = Form("phone"),
     customer_profile_id: int | None = Form(None),
     targets_file: UploadFile | None = File(None),
     image: UploadFile | None = File(None),
@@ -58,6 +62,8 @@ async def create_task(
             customer_profile_id,
             send_type,
             material_group_id,
+            material_group_ids,
+            target_type,
             owner_id=user.id,
         )
     except ValueError as exc:
@@ -77,6 +83,8 @@ async def update_task(
     contact_material_id: int | None = Form(None),
     send_type: str = Form("single"),
     material_group_id: int | None = Form(None),
+    material_group_ids: str | None = Form(None),
+    target_type: str = Form("phone"),
     customer_profile_id: int | None = Form(None),
     targets_file: UploadFile | None = File(None),
     image: UploadFile | None = File(None),
@@ -99,6 +107,8 @@ async def update_task(
             customer_profile_id,
             send_type,
             material_group_id,
+            material_group_ids,
+            target_type,
             owner_id=user.id,
         )
     except ValueError as exc:
@@ -118,6 +128,31 @@ def list_task_logs(
         return task_service.list_task_logs(db, task_id, limit, user.id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/{task_id}/remaining-targets")
+def export_remaining_targets(
+    task_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> Response:
+    try:
+        task, targets = task_service.list_remaining_targets(db, task_id, user.id)
+    except ValueError as exc:
+        status_code = 404 if str(exc) == "Task not found" else 400
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+    filename = quote(f"{task.name}-未发完客户资料.txt")
+    content = "\ufeff" + "\n".join(targets)
+    if targets:
+        content += "\n"
+    return Response(
+        content=content.encode("utf-8"),
+        media_type="text/plain; charset=utf-8",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{filename}",
+            "X-Remaining-Count": str(len(targets)),
+        },
+    )
 
 
 @router.delete("/{task_id}")

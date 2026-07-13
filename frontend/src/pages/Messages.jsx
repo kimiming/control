@@ -224,7 +224,7 @@ export default function Messages() {
         <Input
           allowClear
           prefix={<SearchOutlined />}
-          placeholder="搜索手机号、昵称、TG ID"
+          placeholder="搜索手机号、用户名、昵称、TG ID"
           value={keyword}
           onChange={(event) => setKeyword(event.target.value)}
         />
@@ -270,13 +270,13 @@ export default function Messages() {
                 <List.Item.Meta
                   avatar={
                     <Badge count={item.unread_count || 0} size="small" offset={[-2, 2]}>
-                      <Avatar src={item.avatar}>{(item.nickname || item.phone_number)?.[0]}</Avatar>
+                      <Avatar src={item.avatar}>{(item.nickname || item.username || item.phone_number)?.[0]}</Avatar>
                     </Badge>
                   }
                   title={
                     <div className="customer-card-title">
                       <Space size={6}>
-                        <Typography.Text strong ellipsis>{item.nickname || item.phone_number}</Typography.Text>
+                        <Typography.Text strong ellipsis>{item.nickname || item.username || item.phone_number}</Typography.Text>
                         <Tag color={statusColor[item.reply_status]}>{statusText[item.reply_status] || item.reply_status}</Tag>
                       </Space>
                       <Tooltip title={item.is_favorite ? '取消收藏' : '收藏为意向用户'}>
@@ -292,7 +292,7 @@ export default function Messages() {
                   }
                   description={
                     <Space direction="vertical" size={0}>
-                      <Typography.Text type="secondary">{item.phone_number}</Typography.Text>
+                      <Typography.Text type="secondary">{item.username || item.phone_number || '-'}</Typography.Text>
                       <Typography.Text type="secondary">客服 {item.kf_name || '未绑定'}</Typography.Text>
                       <Typography.Text type="secondary">来自 {item.assigned_session_name || '-'}</Typography.Text>
                     </Space>
@@ -309,7 +309,7 @@ export default function Messages() {
           <>
             <div className="chat-header">
               <div>
-                <Typography.Title level={4}>{selectedCustomer.nickname || selectedCustomer.phone_number}</Typography.Title>
+                <Typography.Title level={4}>{selectedCustomer.nickname || selectedCustomer.username || selectedCustomer.phone_number}</Typography.Title>
                 <Typography.Text type="secondary">
                   客服: {selectedCustomer.kf_name || '未绑定'} / Session: {selectedCustomer.assigned_session_name || '-'}
                 </Typography.Text>
@@ -388,7 +388,8 @@ export default function Messages() {
         {selectedCustomer ? (
           <Space direction="vertical" size={10} style={{ width: '100%' }}>
             <Typography.Title level={5}>客户资料</Typography.Title>
-            <div className="customer-info-card"><Typography.Text type="secondary">手机号</Typography.Text><strong>{selectedCustomer.phone_number}</strong></div>
+            <div className="customer-info-card"><Typography.Text type="secondary">用户名</Typography.Text><strong>{selectedCustomer.username || '-'}</strong></div>
+            <div className="customer-info-card"><Typography.Text type="secondary">手机号</Typography.Text><strong>{selectedCustomer.phone_number || '-'}</strong></div>
             <div className="customer-info-card"><Typography.Text type="secondary">TG ID</Typography.Text><strong>{selectedCustomer.tg_id || '-'}</strong></div>
             <div className="customer-info-card"><Typography.Text type="secondary">负责客服</Typography.Text><strong>{selectedCustomer.kf_name || '未绑定'}</strong></div>
             <div className="customer-info-card"><Typography.Text type="secondary">意向收藏</Typography.Text><strong>{selectedCustomer.is_favorite ? '已收藏' : '未收藏'}</strong></div>

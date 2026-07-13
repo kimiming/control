@@ -28,6 +28,10 @@ class MoveSessions(BaseModel):
     group_id: int | None = None
 
 
+class SessionIds(BaseModel):
+    session_ids: list[int] = Field(min_length=1)
+
+
 class MoveSessionsToAgent(BaseModel):
     session_ids: list[int] = Field(min_length=1)
     kf_id: int | None = None

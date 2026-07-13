@@ -99,6 +99,11 @@ class SessionService:
         return session
 
     async def connect_session(self, db: Session, session: TelegramSession) -> TelegramSession:
+        if session.status == SessionStatus.connected:
+            self.log(db, session.id, "connect_skipped", "Session is already connected")
+            db.commit()
+            db.refresh(session)
+            return session
         session.status = SessionStatus.connecting
         session.error_message = None
         db.commit()
@@ -131,20 +136,37 @@ class SessionService:
         return session
 
     async def disconnect_session(self, db: Session, session: TelegramSession) -> TelegramSession:
-        try:
-            client = build_client(session.session_name)
-            if client.is_connected():
-                await client.disconnect()
-        except Exception:
-            pass
-
         session.status = SessionStatus.disconnected
         session.health_status = "unknown"
         self.log(db, session.id, "disconnect", "Session disconnected")
         db.commit()
         db.refresh(session)
+        from app.services.incoming_listener import incoming_message_listener
+
+        await incoming_message_listener.pause_session(session.id)
         await self.publish_status(session, "status_changed")
         return session
+
+    async def disconnect_sessions(
+        self,
+        db: Session,
+        session_ids: list[int],
+        owner_id: int | None = None,
+    ) -> int:
+        sessions = self.get_sessions_by_ids(db, session_ids, owner_id)
+        for session in sessions:
+            session.status = SessionStatus.disconnected
+            session.health_status = "unknown"
+            self.log(db, session.id, "batch_disconnect", "Session disconnected by batch operation")
+        db.commit()
+
+        from app.services.incoming_listener import incoming_message_listener
+
+        for session in sessions:
+            await incoming_message_listener.pause_session(session.id)
+            db.refresh(session)
+            await self.publish_status(session, "status_changed")
+        return len(sessions)
 
     async def delete_session(self, db: Session, session_id: int, owner_id: int | None = None) -> None:
         session = db.get(TelegramSession, session_id)
@@ -250,14 +272,17 @@ class SessionService:
         return {"created": created, "skipped": skipped}
 
     async def health_check_once(self, db: Session, owner_id: int | None = None) -> dict[str, int]:
-        stmt = select(TelegramSession)
+        stmt = select(TelegramSession).where(TelegramSession.status == SessionStatus.connected)
         if owner_id is not None:
             stmt = stmt.where(TelegramSession.owner_id == owner_id)
         sessions = db.scalars(stmt).all()
         checked = 0
+        from app.services.incoming_listener import incoming_message_listener
+
         for session in sessions:
             checked += 1
             client = None
+            await incoming_message_listener.pause_session(session.id)
             try:
                 client = build_client(session.session_name, proxy_service.get_proxy_url_for_session(db, session))
                 await asyncio.wait_for(client.connect(), timeout=5)
@@ -292,6 +317,7 @@ class SessionService:
             db.commit()
             db.refresh(session)
             await self.publish_status(session, "status_changed")
+            await incoming_message_listener.resume_session(session.id)
         return {"checked": checked}
 
     async def check_bidirectional_status(self, db: Session, session_id: int, owner_id: int | None = None) -> TelegramSession:

@@ -12,6 +12,7 @@ from app.models.customer import Customer
 from app.models.message import Message
 from app.models.session import SessionStatus, TelegramSession
 from app.services.proxy_service import proxy_service
+from app.services.target_parser import normalize_username
 
 
 class IncomingMessageListener:
@@ -146,27 +147,38 @@ class IncomingMessageListener:
         try:
             sender = await event.get_sender()
             sender_access_hash = getattr(sender, "access_hash", None)
+            sender_username = normalize_username(getattr(sender, "username", None))
+            sender_phone = getattr(sender, "phone", None)
+            if sender_phone and not str(sender_phone).startswith("+"):
+                sender_phone = f"+{sender_phone}"
             sender_name = getattr(sender, "username", None) or " ".join(
                 part for part in [getattr(sender, "first_name", None), getattr(sender, "last_name", None)] if part
             ) or sender_id
         except Exception:
             sender_access_hash = None
+            sender_username = None
+            sender_phone = None
             pass
 
         db = SessionLocal()
         try:
             session = db.get(TelegramSession, session_id)
+            customer_identifiers = [Customer.tg_id == sender_id, Customer.phone_number == sender_id]
+            if sender_username:
+                customer_identifiers.append(Customer.username == sender_username)
             customer = db.scalar(
                 select(Customer).where(
                     Customer.owner_id == (session.owner_id if session else None),
                     Customer.assigned_session_id == session_id,
-                    or_(Customer.tg_id == sender_id, Customer.phone_number == sender_id),
+                    or_(*customer_identifiers),
                 )
             )
             if not customer:
                 return
             customer.tg_id = customer.tg_id or sender_id
             customer.access_hash = str(sender_access_hash) if sender_access_hash else customer.access_hash
+            customer.username = sender_username or customer.username
+            customer.phone_number = str(sender_phone) if sender_phone else customer.phone_number
             customer.nickname = customer.nickname or sender_name
             customer.kf_id = session.kf_id if session else customer.kf_id
             customer.reply_status = "replied"
@@ -222,7 +234,7 @@ class IncomingMessageListener:
             )
             chat_keys = [chat_key]
             if customer:
-                chat_keys.extend(value for value in [customer.tg_id, customer.phone_number] if value)
+                chat_keys.extend(value for value in [customer.tg_id, customer.username, customer.phone_number] if value)
             db.execute(
                 update(Message)
                 .where(
