@@ -79,6 +79,18 @@ class CustomerService:
             stmt = stmt.where(TelegramSession.kf_id == kf_id)
         if reply_status in {"replied", "not_replied"}:
             stmt = stmt.where(Customer.reply_status == reply_status)
+        elif reply_status == "peer_read":
+            has_peer_read_message = select(Message.id).where(
+                Message.session_id == Customer.assigned_session_id,
+                Message.direction == "outbound",
+                Message.read_status == "read",
+                or_(
+                    Message.chat_id == Customer.tg_id,
+                    Message.chat_id == Customer.username,
+                    Message.chat_id == Customer.phone_number,
+                ),
+            ).exists()
+            stmt = stmt.where(has_peer_read_message)
         if is_favorite is not None:
             stmt = stmt.where(Customer.is_favorite == is_favorite)
         if keyword:

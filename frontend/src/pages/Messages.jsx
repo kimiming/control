@@ -283,6 +283,7 @@ export default function Messages() {
           options={[
             { label: '已回复客户', value: 'replied' },
             { label: '未回复客户', value: 'not_replied' },
+            { label: '对方已读', value: 'peer_read' },
           ]}
           onChange={(value) => {
             setReplyStatus(value);
