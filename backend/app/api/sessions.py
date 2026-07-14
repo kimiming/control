@@ -1,6 +1,7 @@
+import json
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
 
 from app.core.auth import get_current_user
@@ -120,6 +121,77 @@ async def health_check(db: Session = Depends(get_db), user: User = Depends(get_c
 @router.post("/bidirectional-check")
 async def batch_bidirectional_check(db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, int]:
     return await session_service.check_all_bidirectional_statuses(db, user.id)
+
+
+@router.post("/contacts/scan")
+async def batch_scan_contacts(payload: SessionIds, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    return await session_service.batch_contact_action(db, payload.session_ids, "scan", user.id)
+
+
+@router.post("/contacts/clear")
+async def batch_clear_contacts(payload: SessionIds, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    return await session_service.batch_contact_action(db, payload.session_ids, "clear", user.id)
+
+
+@router.post("/contacts/import")
+async def batch_import_contacts(
+    session_ids: str = Form(...),
+    per_session_limit: int = Form(...),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    try:
+        raw_ids = json.loads(session_ids)
+        if not isinstance(raw_ids, list):
+            raise ValueError("Session参数格式错误")
+        ids = [int(value) for value in raw_ids]
+        if not ids:
+            raise ValueError("请选择Session")
+        phones = session_service.parse_contact_phones(await file.read())
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    try:
+        result = await session_service.distribute_import_contacts(db, ids, phones, per_session_limit, user.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    result["phone_count"] = len(phones)
+    return result
+
+
+@router.post("/{session_id}/contacts/scan")
+async def scan_contacts(session_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    try:
+        session = await session_service.scan_contacts(db, session_id, user.id)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return session_service.serialize_session(session)
+
+
+@router.post("/{session_id}/contacts/clear")
+async def clear_contacts(session_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    try:
+        session = await session_service.clear_contacts(db, session_id, user.id)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return session_service.serialize_session(session)
+
+
+@router.post("/{session_id}/contacts/import")
+async def import_contacts(
+    session_id: int,
+    import_limit: int = Form(...),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    try:
+        phones = session_service.parse_contact_phones(await file.read())
+        result = await session_service.distribute_import_contacts(db, [session_id], phones, import_limit, user.id)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    result["phone_count"] = len(phones)
+    return result
 
 
 @router.post("/{session_id}/bidirectional-check")

@@ -23,10 +23,17 @@ def run_lightweight_migrations() -> None:
             "ALTER TABLE customer_profiles ADD COLUMN target_type VARCHAR(20) NOT NULL DEFAULT 'phone'",
             "CREATE INDEX ix_customer_profiles_target_type ON customer_profiles (target_type)",
             "ALTER TABLE tasks ADD COLUMN target_type VARCHAR(20) NOT NULL DEFAULT 'phone'",
+            "ALTER TABLE tasks ADD COLUMN target_source VARCHAR(20) NOT NULL DEFAULT 'imported'",
+            "CREATE INDEX ix_tasks_target_source ON tasks (target_source)",
             "CREATE INDEX ix_tasks_target_type ON tasks (target_type)",
             "ALTER TABLE customers ADD COLUMN username VARCHAR(100) NULL",
             "CREATE INDEX ix_customers_username ON customers (username)",
             "ALTER TABLE tasks ADD COLUMN material_group_ids TEXT NULL",
+            "ALTER TABLE task_targets ADD COLUMN payload_json TEXT NULL",
+            "CREATE INDEX ix_session_task_logs_task_created ON session_task_logs (task_id, created_at)",
+            "CREATE INDEX ix_session_task_logs_task_status_created ON session_task_logs (task_id, status, created_at)",
+            "ALTER TABLE sessions ADD COLUMN contact_count INTEGER NULL",
+            "ALTER TABLE sessions ADD COLUMN contacts_scanned_at DATETIME NULL",
         ]
         with engine.begin() as connection:
             for statement in statements:
@@ -128,12 +135,19 @@ def run_lightweight_migrations() -> None:
         "ALTER TABLE customer_profiles ADD COLUMN target_type VARCHAR(20) NOT NULL DEFAULT 'phone'",
         "CREATE INDEX ix_customer_profiles_target_type ON customer_profiles (target_type)",
         "ALTER TABLE tasks ADD COLUMN target_type VARCHAR(20) NOT NULL DEFAULT 'phone'",
+        "ALTER TABLE tasks ADD COLUMN target_source VARCHAR(20) NOT NULL DEFAULT 'imported'",
+        "CREATE INDEX ix_tasks_target_source ON tasks (target_source)",
         "CREATE INDEX ix_tasks_target_type ON tasks (target_type)",
         "ALTER TABLE customers ADD COLUMN username VARCHAR(100) NULL",
         "CREATE INDEX ix_customers_username ON customers (username)",
         "ALTER TABLE customers MODIFY COLUMN phone_number VARCHAR(32) NULL",
         "ALTER TABLE session_task_logs MODIFY COLUMN target_phone VARCHAR(100) NOT NULL",
         "ALTER TABLE tasks ADD COLUMN material_group_ids TEXT NULL",
+        "ALTER TABLE task_targets ADD COLUMN payload_json TEXT NULL",
+        "CREATE INDEX ix_session_task_logs_task_created ON session_task_logs (task_id, created_at)",
+        "CREATE INDEX ix_session_task_logs_task_status_created ON session_task_logs (task_id, status, created_at)",
+        "ALTER TABLE sessions ADD COLUMN contact_count INT NULL",
+        "ALTER TABLE sessions ADD COLUMN contacts_scanned_at DATETIME NULL",
     ]
     with engine.begin() as connection:
         for statement in statements:

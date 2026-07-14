@@ -11,6 +11,7 @@ from telethon.tl.functions.messages import SendMediaRequest
 from telethon.tl.functions.contacts import ImportContactsRequest
 from telethon.tl.types import InputMediaContact, InputPeerUser, InputPhoneContact
 
+from app.core.cache import redis_client
 from app.core.telegram import build_client
 from app.models.customer import Customer
 from app.models.material import Material
@@ -231,10 +232,18 @@ class CustomerService:
     ) -> tuple[str, str | None, int | None]:
         from app.services.incoming_listener import incoming_message_listener
 
-        await incoming_message_listener.pause_session(session.id)
-        client = build_client(session.session_name, proxy_url)
+        await incoming_message_listener.acquire_client_operation(session.id)
+        client = incoming_message_listener.get_connected_client(session.id)
+        owns_client = client is None
+        if owns_client:
+            if await redis_client.exists(f"marketing:session_lock:{session.id}"):
+                incoming_message_listener.release_client_operation(session.id)
+                raise RuntimeError("Session正在执行发送任务，请稍后回复")
+            await incoming_message_listener.pause_session(session.id)
+            client = build_client(session.session_name, proxy_url)
         try:
-            await asyncio.wait_for(client.connect(), timeout=10)
+            if owns_client:
+                await asyncio.wait_for(client.connect(), timeout=10)
             if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
                 raise RuntimeError("Session is not authorized")
             entity = await self._resolve_customer_entity(client, customer)
@@ -242,17 +251,27 @@ class CustomerService:
             content, image_path, telegram_message_id = await self._send_reply_payload(client, entity, text, material)
             return content, image_path, telegram_message_id
         finally:
-            if client.is_connected():
+            if owns_client and client.is_connected():
                 await client.disconnect()
-            await incoming_message_listener.resume_session(session.id)
+            if owns_client:
+                await incoming_message_listener.resume_session(session.id)
+            incoming_message_listener.release_client_operation(session.id)
 
     async def _acknowledge_customer_read(self, session: TelegramSession, customer: Customer, proxy_url: str | None) -> None:
         from app.services.incoming_listener import incoming_message_listener
 
-        await incoming_message_listener.pause_session(session.id)
-        client = build_client(session.session_name, proxy_url)
+        await incoming_message_listener.acquire_client_operation(session.id)
+        client = incoming_message_listener.get_connected_client(session.id)
+        owns_client = client is None
+        if owns_client:
+            if await redis_client.exists(f"marketing:session_lock:{session.id}"):
+                incoming_message_listener.release_client_operation(session.id)
+                return
+            await incoming_message_listener.pause_session(session.id)
+            client = build_client(session.session_name, proxy_url)
         try:
-            await asyncio.wait_for(client.connect(), timeout=10)
+            if owns_client:
+                await asyncio.wait_for(client.connect(), timeout=10)
             if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
                 return
             entity = await self._resolve_customer_entity(client, customer)
@@ -260,9 +279,11 @@ class CustomerService:
         except Exception:
             return
         finally:
-            if client.is_connected():
+            if owns_client and client.is_connected():
                 await client.disconnect()
-            await incoming_message_listener.resume_session(session.id)
+            if owns_client:
+                await incoming_message_listener.resume_session(session.id)
+            incoming_message_listener.release_client_operation(session.id)
 
     async def _send_read_acknowledge(self, client: Any, entity: Any) -> None:
         try:

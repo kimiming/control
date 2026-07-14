@@ -1,23 +1,24 @@
 import asyncio
 import json
 import random
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from fastapi import UploadFile
-from sqlalchemy import select
+from sqlalchemy import case, delete, func, insert, or_, select, update
 from sqlalchemy.orm import Session
 from telethon.tl.functions.messages import SendMediaRequest
-from telethon.tl.functions.contacts import ImportContactsRequest
+from telethon.tl.functions.contacts import GetContactsRequest, ImportContactsRequest
 from telethon.tl.types import InputMediaContact, InputPeerUser, InputPhoneContact
 
 from app.core.telegram import build_client
 from app.models.customer import Customer
 from app.models.customer_profile import CustomerProfile
 from app.models.session import SessionStatus, SessionTaskLog, TelegramSession
-from app.models.task import MarketingTask
+from app.models.task import MarketingTask, TaskOutbox, TaskTarget
 from app.models.message import Message
 from app.models.material import Material
+from app.models.proxy import ProxyConfig
 from app.services.customer_service import customer_service
 from app.services.image_storage import save_compressed_image
 from app.services.material_service import material_service
@@ -55,10 +56,12 @@ class TaskService:
         material_group_id: int | None = None,
         material_group_ids: str | None = None,
         target_type: str = "phone",
+        target_source: str = "imported",
         owner_id: int | None = None,
     ) -> MarketingTask:
+        target_source = self._validate_target_source(target_source)
         target_type = validate_target_type(target_type)
-        targets = await self._resolve_targets(db, targets_file, customer_profile_id, target_type, owner_id)
+        targets = await self._resolve_targets(db, targets_file, customer_profile_id, target_type, owner_id) if target_source == "imported" else []
         send_type = self._validate_send_type(send_type)
         selected_group_ids: list[int] = []
         if send_type == "group":
@@ -85,6 +88,7 @@ class TaskService:
             session_group_id=session_group_id,
             messages_per_target=messages_per_target,
             target_type=target_type,
+            target_source=target_source,
             targets_text="\n".join(targets),
             total_targets=len(targets),
             image_path=image_path,
@@ -116,9 +120,12 @@ class TaskService:
         material_group_id: int | None = None,
         material_group_ids: str | None = None,
         target_type: str = "phone",
+        target_source: str = "imported",
         owner_id: int | None = None,
     ) -> MarketingTask:
         task = self.get_task(db, task_id, owner_id)
+        if task.status in {"queued", "running", "paused", "cancelling"}:
+            raise ValueError("Queued or running tasks cannot be edited")
         task.name = name
         send_type = self._validate_send_type(send_type)
         task.send_type = send_type
@@ -147,14 +154,21 @@ class TaskService:
                 task.content = content
         task.session_group_id = session_group_id
         task.messages_per_target = messages_per_target
+        target_source = self._validate_target_source(target_source)
         target_type = validate_target_type(target_type)
-        if targets_file or customer_profile_id:
+        if target_source == "contacts":
+            task.targets_text = ""
+            task.total_targets = 0
+        elif targets_file or customer_profile_id:
             targets = await self._resolve_targets(db, targets_file, customer_profile_id, target_type, owner_id)
             task.targets_text = "\n".join(targets)
             task.total_targets = len(targets)
+        elif (task.target_source or "imported") == "contacts":
+            raise ValueError("切换到导入数据时必须重新导入TXT或选择客户资料")
         elif target_type != (task.target_type or "phone"):
             raise ValueError("Changing target type requires a new target TXT file or customer profile")
         task.target_type = target_type
+        task.target_source = target_source
         if send_type == "single":
             image_path = await self._resolve_image_path(db, image, image_material_id, owner_id)
             if image_path:
@@ -170,19 +184,40 @@ class TaskService:
 
     def delete_task(self, db: Session, task_id: int, owner_id: int | None = None) -> None:
         task = self.get_task(db, task_id, owner_id)
+        if task.status in {"queued", "running", "paused", "cancelling"}:
+            raise ValueError("Running or queued tasks cannot be deleted")
         db.delete(task)
         db.commit()
 
-    def list_task_logs(self, db: Session, task_id: int, limit: int = 500, owner_id: int | None = None) -> list[dict[str, Any]]:
+    def list_task_logs(
+        self,
+        db: Session,
+        task_id: int,
+        page: int = 1,
+        page_size: int = 50,
+        status: str | None = None,
+        keyword: str | None = None,
+        owner_id: int | None = None,
+    ) -> dict[str, Any]:
         self.get_task(db, task_id, owner_id)
+        filters = [SessionTaskLog.task_id == task_id]
+        if status:
+            filters.append(SessionTaskLog.status == status)
+        if keyword:
+            pattern = f"%{keyword.strip()}%"
+            filters.append(or_(SessionTaskLog.target_phone.like(pattern), SessionTaskLog.message.like(pattern)))
+        total = db.scalar(select(func.count(SessionTaskLog.id)).where(*filters)) or 0
+        page = max(page, 1)
+        page_size = min(max(page_size, 1), 200)
         stmt = (
             select(SessionTaskLog, TelegramSession)
             .join(TelegramSession, SessionTaskLog.session_id == TelegramSession.id, isouter=True)
-            .where(SessionTaskLog.task_id == task_id)
+            .where(*filters)
             .order_by(SessionTaskLog.created_at.desc(), SessionTaskLog.id.desc())
-            .limit(min(max(limit, 1), 1000))
+            .offset((page - 1) * page_size)
+            .limit(page_size)
         )
-        return [
+        items = [
             {
                 "id": log.id,
                 "task_id": log.task_id,
@@ -198,6 +233,7 @@ class TaskService:
             }
             for log, session in db.execute(stmt).all()
         ]
+        return {"items": items, "total": total, "page": page, "page_size": page_size}
 
     def list_remaining_targets(self, db: Session, task_id: int, owner_id: int | None = None) -> tuple[MarketingTask, list[str]]:
         task = self.get_task(db, task_id, owner_id)
@@ -212,8 +248,507 @@ class TaskService:
                 )
             ).all()
         )
+        attempted_targets.update(
+            db.scalars(
+                select(TaskTarget.target).where(
+                    TaskTarget.task_id == task.id,
+                    TaskTarget.status.in_(["processing", "success", "failed", "uncertain"]),
+                )
+            ).all()
+        )
         remaining = [target for target in targets if target not in attempted_targets]
         return task, remaining
+
+    def prepare_queued_task(
+        self,
+        db: Session,
+        task_id: int,
+        owner_id: int | None = None,
+    ) -> tuple[MarketingTask, list[int]]:
+        """Persist unique target assignments and return one durable job per Session."""
+        task = self.get_task(db, task_id, owner_id)
+        if task.status in {"queued", "running"}:
+            raise ValueError("Task is already queued or running")
+        target_source = self._validate_target_source(task.target_source or "imported")
+        target_type = validate_target_type(task.target_type)
+        all_targets = parse_targets(task.targets_text, target_type) if target_source == "imported" else []
+        if target_source == "imported" and not all_targets:
+            raise ValueError("No valid targets")
+
+        if (task.send_type or "single") == "group":
+            queued_group_materials = self._validate_material_group(db, task.material_group_id, owner_id)
+            queued_concat_groups: list[list[Material]] = []
+        elif task.send_type == "concat":
+            queued_group_materials = []
+            queued_concat_groups = self._validate_concat_groups(db, self._deserialize_group_ids(task.material_group_ids), owner_id)
+        else:
+            queued_group_materials = []
+            queued_concat_groups = []
+
+        session_stmt = select(TelegramSession).where(TelegramSession.status == SessionStatus.connected)
+        if owner_id is not None:
+            session_stmt = session_stmt.where(TelegramSession.owner_id == owner_id)
+        if task.session_group_id:
+            session_stmt = session_stmt.where(TelegramSession.group_id == task.session_group_id)
+        sessions = list(db.scalars(session_stmt.order_by(TelegramSession.created_at.asc(), TelegramSession.id.asc())).all())
+        if not sessions:
+            raise ValueError("No connected sessions in selected group")
+
+        db.execute(delete(TaskTarget).where(TaskTarget.task_id == task.id, TaskTarget.status.in_(["unassigned", "cancelled"])))
+        db.flush()
+        recorded_targets = set(
+            db.scalars(select(TaskTarget.target).where(TaskTarget.task_id == task.id)).all()
+        )
+        recorded_targets.update(
+            db.scalars(
+                select(SessionTaskLog.target_phone).where(
+                    SessionTaskLog.task_id == task.id,
+                    SessionTaskLog.target_phone.is_not(None),
+                )
+            ).all()
+        )
+        if target_source == "contacts" and recorded_targets:
+            raise ValueError("联系人好友任务已经分配过目标，不能重复执行")
+        remaining = [target for target in all_targets if target not in recorded_targets]
+        if target_source == "imported" and not remaining:
+            raise ValueError("This task has no unprocessed targets")
+
+        quota = max(task.messages_per_target, 1)
+        assignable = remaining[: len(sessions) * quota]
+        session_ids: list[int] = []
+        cursor = 0
+        material_queue: list[Material] = []
+        target_rows: list[dict[str, Any]] = []
+        for session in sessions:
+            assigned = (
+                [f"__contact_slot__:{session.id}:{index}" for index in range(quota)]
+                if target_source == "contacts"
+                else assignable[cursor : cursor + quota]
+            )
+            if not assigned:
+                break
+            session_ids.append(session.id)
+            for target in assigned:
+                payload_json = None
+                if queued_group_materials:
+                    if not material_queue:
+                        material_queue = self._weighted_random_order(queued_group_materials)
+                    payload_json = json.dumps([self._material_payload(material_queue.pop(0))], ensure_ascii=False)
+                elif queued_concat_groups:
+                    payload_json = json.dumps([self._concat_payload(queued_concat_groups)], ensure_ascii=False)
+                target_rows.append({
+                    "task_id": task.id,
+                    "session_id": session.id,
+                    "target": target,
+                    "payload_json": payload_json,
+                    "status": "queued",
+                    "attempt_count": 0,
+                })
+            cursor += len(assigned)
+
+        if target_source == "contacts":
+            task.total_targets = len(target_rows)
+
+        if target_rows:
+            db.execute(insert(TaskTarget), target_rows)
+        db.add(TaskOutbox(
+            task_id=task.id,
+            event_type="enqueue",
+            payload_json=json.dumps({"task_id": task.id, "session_ids": session_ids}),
+            status="pending",
+        ))
+
+        task.status = "queued"
+        task.error_message = None
+        task.last_run_at = datetime.utcnow()
+        db.commit()
+        db.refresh(task)
+        return task, session_ids
+
+    def pause_task(self, db: Session, task_id: int, owner_id: int | None = None) -> MarketingTask:
+        task = self.get_task(db, task_id, owner_id)
+        if task.status not in {"queued", "running"}:
+            raise ValueError("Only queued or running tasks can be paused")
+        task.status = "paused"
+        db.commit()
+        db.refresh(task)
+        return task
+
+    def resume_task(self, db: Session, task_id: int, owner_id: int | None = None) -> MarketingTask:
+        task = self.get_task(db, task_id, owner_id)
+        if task.status != "paused":
+            raise ValueError("Only paused tasks can be resumed")
+        session_ids = self._queued_session_ids(db, task.id)
+        if not session_ids:
+            raise ValueError("Task has no queued Session jobs")
+        task.status = "queued"
+        self._add_outbox(db, task.id, session_ids, "resume")
+        db.commit()
+        db.refresh(task)
+        return task
+
+    def cancel_task(self, db: Session, task_id: int, owner_id: int | None = None) -> MarketingTask:
+        task = self.get_task(db, task_id, owner_id)
+        if task.status not in {"queued", "running", "paused", "cancelling"}:
+            raise ValueError("Task is not active")
+        now = datetime.utcnow()
+        db.execute(update(TaskTarget).where(
+            TaskTarget.task_id == task.id,
+            TaskTarget.status == "queued",
+        ).values(status="cancelled", error_message="任务已取消，未发送", finished_at=now))
+        processing = db.scalar(select(func.count(TaskTarget.id)).where(
+            TaskTarget.task_id == task.id,
+            TaskTarget.status == "processing",
+        )) or 0
+        task.status = "cancelling" if processing else "cancelled"
+        task.error_message = "任务已由用户取消"
+        db.commit()
+        db.refresh(task)
+        return task
+
+    def requeue_session_job(
+        self,
+        db: Session,
+        task_id: int,
+        session_id: int,
+        owner_id: int | None = None,
+    ) -> MarketingTask:
+        task = self.get_task(db, task_id, owner_id)
+        if task.status in {"queued", "running", "cancelling"}:
+            raise ValueError("Wait for the active task to stop before requeuing a Session")
+        session = db.get(TelegramSession, session_id)
+        if not session or session.owner_id != task.owner_id or session.status != SessionStatus.connected:
+            raise ValueError("Session is unavailable or not connected")
+        rows = list(db.scalars(select(TaskTarget).where(
+            TaskTarget.task_id == task.id,
+            TaskTarget.session_id == session_id,
+            TaskTarget.status.in_(["unassigned", "cancelled"]),
+        )).all())
+        if not rows:
+            raise ValueError("This Session has no definitely unsent targets")
+        for row in rows:
+            row.status = "queued"
+            row.error_message = None
+            row.started_at = None
+            row.finished_at = None
+        task.status = "queued"
+        task.error_message = None
+        self._add_outbox(db, task.id, [session_id], "requeue_session")
+        db.commit()
+        db.refresh(task)
+        return task
+
+    def active_task_sessions(self, db: Session, task_id: int, owner_id: int | None = None) -> list[dict[str, Any]]:
+        self.get_task(db, task_id, owner_id)
+        rows = db.execute(
+            select(TaskTarget, TelegramSession)
+            .join(TelegramSession, TaskTarget.session_id == TelegramSession.id)
+            .where(TaskTarget.task_id == task_id, TaskTarget.status == "processing")
+            .order_by(TaskTarget.started_at.asc())
+        ).all()
+        return [{
+            "session_id": session.id,
+            "session_name": session.session_name,
+            "session_phone": session.phone,
+            "target": target.target,
+            "started_at": target.started_at.isoformat() if target.started_at else None,
+        } for target, session in rows]
+
+    def task_session_jobs(self, db: Session, task_id: int, owner_id: int | None = None) -> list[dict[str, Any]]:
+        self.get_task(db, task_id, owner_id)
+        rows = db.execute(
+            select(TelegramSession, TaskTarget.status, func.count(TaskTarget.id))
+            .join(TaskTarget, TaskTarget.session_id == TelegramSession.id)
+            .where(TaskTarget.task_id == task_id)
+            .group_by(TelegramSession.id, TaskTarget.status)
+            .order_by(TelegramSession.id.asc())
+        ).all()
+        jobs: dict[int, dict[str, Any]] = {}
+        for session, status, count in rows:
+            job = jobs.setdefault(session.id, {
+                "session_id": session.id,
+                "session_name": session.session_name,
+                "session_phone": session.phone,
+                "session_status": session.status.value,
+                "counts": {},
+                "requeueable": 0,
+            })
+            job["counts"][status] = int(count)
+            if status in {"unassigned", "cancelled"}:
+                job["requeueable"] += int(count)
+        return list(jobs.values())
+
+    def task_stats(self, db: Session, task: MarketingTask) -> dict[str, Any]:
+        grouped = {
+            status: count
+            for status, count in db.execute(
+                select(TaskTarget.status, func.count(TaskTarget.id))
+                .where(TaskTarget.task_id == task.id)
+                .group_by(TaskTarget.status)
+            ).all()
+        }
+        success = int(grouped.get("success", 0))
+        failed = int(grouped.get("failed", 0))
+        processing = int(grouped.get("processing", 0))
+        uncertain = int(grouped.get("uncertain", 0))
+        queued = int(grouped.get("queued", 0))
+        assigned = sum(int(value) for value in grouped.values())
+        unprocessed = max(task.total_targets - success - failed - processing - uncertain, 0)
+        cutoff = datetime.utcnow() - timedelta(minutes=5)
+        recent_success = db.scalar(select(func.count(TaskTarget.id)).where(
+            TaskTarget.task_id == task.id,
+            TaskTarget.status == "success",
+            TaskTarget.finished_at >= cutoff,
+        )) or 0
+        elapsed_minutes = 5.0
+        if task.last_run_at and task.last_run_at > cutoff:
+            elapsed_minutes = max((datetime.utcnow() - task.last_run_at).total_seconds() / 60, 1 / 60)
+        speed = round(float(recent_success) / elapsed_minutes, 2)
+        eta_minutes = round(unprocessed / speed) if speed > 0 and unprocessed else 0 if not unprocessed else None
+
+        assigned_session_ids = select(TaskTarget.session_id).where(
+            TaskTarget.task_id == task.id,
+            TaskTarget.session_id.is_not(None),
+        )
+        throttled_sessions = db.scalar(select(func.count(func.distinct(TelegramSession.id))).where(
+            TelegramSession.id.in_(assigned_session_ids),
+            or_(TelegramSession.health_status == "restricted", TelegramSession.status == SessionStatus.error),
+        )) or 0
+        group_ids = set(db.scalars(select(TelegramSession.group_id).where(
+            TelegramSession.id.in_(assigned_session_ids), TelegramSession.group_id.is_not(None)
+        )).all())
+        abnormal_proxies = 0
+        for proxy in db.scalars(select(ProxyConfig).where(ProxyConfig.owner_id == task.owner_id)).all():
+            proxy_groups = {int(value) for value in proxy_service._deserialize_group_ids(proxy.group_ids) if value.isdigit()}
+            if proxy_groups.intersection(group_ids) and proxy.status in {"unreachable", "error", "unhealthy"}:
+                abnormal_proxies += 1
+        return {
+            "assigned": assigned,
+            "queued": queued,
+            "processing": processing,
+            "success": success,
+            "failed": failed,
+            "unprocessed": unprocessed,
+            "uncertain": uncertain,
+            "cancelled": int(grouped.get("cancelled", 0)),
+            "throttled_sessions": int(throttled_sessions),
+            "abnormal_proxies": abnormal_proxies,
+            "current_concurrency": processing,
+            "speed_per_minute": speed,
+            "eta_minutes": eta_minutes,
+        }
+
+    def _queued_session_ids(self, db: Session, task_id: int) -> list[int]:
+        values = db.scalars(select(TaskTarget.session_id).where(
+            TaskTarget.task_id == task_id,
+            TaskTarget.status == "queued",
+            TaskTarget.session_id.is_not(None),
+        ).distinct()).all()
+        return [int(value) for value in values]
+
+    def _add_outbox(self, db: Session, task_id: int, session_ids: list[int], event_type: str) -> None:
+        db.add(TaskOutbox(
+            task_id=task_id,
+            event_type=event_type,
+            payload_json=json.dumps({"task_id": task_id, "session_ids": session_ids}),
+            status="pending",
+        ))
+
+    async def process_session_job(self, task_id: int, session_id: int) -> None:
+        """Use one Telegram connection to process every queued target assigned to a Session."""
+        from app.core.database import SessionLocal
+        from app.services.incoming_listener import incoming_message_listener
+
+        db = SessionLocal()
+        client: Any | None = None
+        owns_client = False
+        operation_acquired = False
+        try:
+            task = db.get(MarketingTask, task_id)
+            session = db.get(TelegramSession, session_id)
+            if not task or not session:
+                return
+            targets = list(
+                db.scalars(
+                    select(TaskTarget).where(
+                        TaskTarget.task_id == task_id,
+                        TaskTarget.session_id == session_id,
+                        TaskTarget.status.in_(["queued", "processing"]),
+                    ).order_by(TaskTarget.id.asc())
+                ).all()
+            )
+            if not targets:
+                await self._finish_background_task(db, task)
+                return
+
+            if task.status in {"paused", "cancelling", "cancelled"}:
+                await self._finish_background_task(db, task)
+                return
+
+            if task.status == "queued":
+                db.execute(update(MarketingTask).where(
+                    MarketingTask.id == task.id,
+                    MarketingTask.status == "queued",
+                ).values(status="running"))
+            db.commit()
+            db.refresh(task)
+            if task.status != "running":
+                await self._finish_background_task(db, task)
+                return
+
+            await incoming_message_listener.acquire_client_operation(session.id)
+            operation_acquired = True
+            client = incoming_message_listener.get_connected_client(session.id)
+            if client is None:
+                await incoming_message_listener.pause_session(session.id)
+                client = build_client(session.session_name, proxy_service.get_proxy_url_for_session(db, session))
+                owns_client = True
+                await asyncio.wait_for(client.connect(), timeout=10)
+                if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
+                    raise RuntimeError("Session is not authorized")
+            elif not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
+                raise RuntimeError("Session is not authorized")
+
+            for item in targets:
+                db.refresh(task)
+                db.refresh(item)
+                if task.status in {"paused", "cancelling", "cancelled"}:
+                    break
+                if item.status != "queued":
+                    continue
+                item.status = "processing"
+                item.started_at = datetime.utcnow()
+                item.attempt_count += 1
+                db.commit()
+                try:
+                    payload_data = json.loads(item.payload_json) if item.payload_json else None
+                    contact_data = payload_data.get("contact") if isinstance(payload_data, dict) else None
+                    payloads = payload_data.get("materials") if isinstance(payload_data, dict) else payload_data
+                    if (task.target_source or "imported") == "contacts" and not contact_data:
+                        await self._assign_contact_targets(db, client, task, session, targets)
+                        db.refresh(item)
+                        payload_data = json.loads(item.payload_json) if item.payload_json else {}
+                        contact_data = payload_data.get("contact")
+                        payloads = payload_data.get("materials")
+                    if (task.target_source or "imported") == "contacts" and not contact_data:
+                        continue
+                    display_target = contact_data.get("display") if contact_data else item.target
+                    is_contact_target = (task.target_source or "imported") == "contacts"
+                    delivery_target_type = "username" if is_contact_target else task.target_type
+                    session_customer = None if is_contact_target else self._find_session_customer(db, display_target, task.target_type, session.id)
+                    sent_meta = await self._send_message_with_client(
+                        client,
+                        display_target,
+                        task.content,
+                        task.image_path,
+                        task.contact_card,
+                        delivery_target_type,
+                        contact_data.get("tg_id") if contact_data else (session_customer.tg_id if session_customer else None),
+                        contact_data.get("access_hash") if contact_data else (session_customer.access_hash if session_customer else None),
+                        payloads,
+                    )
+                    customer = customer_service.upsert_customer_from_task(
+                        db=db,
+                        target=display_target,
+                        target_type="contact" if is_contact_target else task.target_type,
+                        session=session,
+                        tg_id=sent_meta.get("tg_id"),
+                        nickname=sent_meta.get("nickname"),
+                        access_hash=sent_meta.get("access_hash"),
+                        username=sent_meta.get("username"),
+                        phone_number=sent_meta.get("phone_number"),
+                        owner_id=task.owner_id,
+                    )
+                    outbound_payloads = payloads or [{"content": task.content, "image_path": task.image_path, "contact_card": task.contact_card}]
+                    message_ids = sent_meta.get("message_ids") or []
+                    for payload_index, payload in enumerate(outbound_payloads):
+                        db.add(Message(
+                            session_id=session.id,
+                            chat_id=customer.tg_id or item.target,
+                            telegram_message_id=message_ids[payload_index] if payload_index < len(message_ids) else None,
+                            sender=session.username,
+                            content=payload["content"] or self._contact_card_message(payload["contact_card"]),
+                            image_path=payload["image_path"],
+                            direction="outbound",
+                            read_status="sent",
+                        ))
+                    item.status = "success"
+                    item.error_message = None
+                    item.finished_at = datetime.utcnow()
+                    self._log_session_task(db, session.id, task, display_target, "success", "后台队列发送成功")
+                    db.execute(update(MarketingTask).where(MarketingTask.id == task.id).values(sent_count=MarketingTask.sent_count + 1))
+                    db.commit()
+                except Exception as exc:
+                    error = str(exc)
+                    item.status = "failed"
+                    item.error_message = error[:2000]
+                    item.finished_at = datetime.utcnow()
+                    self._log_session_task(db, session.id, task, item.target, "failed", f"发送失败，不换号重试：{error}")
+                    db.execute(update(MarketingTask).where(MarketingTask.id == task.id).values(failed_count=MarketingTask.failed_count + 1))
+                    if self._is_session_restricted_error(exc):
+                        self._mark_session_restricted(db, session, error)
+                        for remaining in targets:
+                            if remaining.status == "queued":
+                                remaining.status = "unassigned"
+                                remaining.error_message = "Session受限，未尝试发送"
+                        db.commit()
+                        break
+                    db.commit()
+            await self._finish_background_task(db, task)
+        except Exception as exc:
+            if 'task' in locals() and task:
+                for item in db.scalars(select(TaskTarget).where(
+                    TaskTarget.task_id == task_id,
+                    TaskTarget.session_id == session_id,
+                    TaskTarget.status.in_(["queued", "processing"]),
+                )).all():
+                    item.status = "unassigned"
+                    item.error_message = str(exc)[:2000]
+                task.error_message = str(exc)[:2000]
+                db.commit()
+                await self._finish_background_task(db, task)
+        finally:
+            if owns_client and client is not None:
+                try:
+                    if client.is_connected():
+                        await client.disconnect()
+                finally:
+                    await incoming_message_listener.resume_session(session_id)
+            if operation_acquired:
+                incoming_message_listener.release_client_operation(session_id)
+            db.close()
+
+    async def _finish_background_task(self, db: Session, task: MarketingTask) -> None:
+        active = db.scalar(select(func.count(TaskTarget.id)).where(
+            TaskTarget.task_id == task.id,
+            TaskTarget.status.in_(["queued", "processing"]),
+        )) or 0
+        if active:
+            return
+        db.refresh(task)
+        if task.status in {"cancelling", "cancelled"}:
+            db.execute(update(MarketingTask).where(
+                MarketingTask.id == task.id,
+                MarketingTask.status == "cancelling",
+            ).values(status="cancelled"))
+            db.commit()
+            return
+        if task.status == "paused":
+            return
+        failed = db.scalar(select(func.count(TaskTarget.id)).where(
+            TaskTarget.task_id == task.id,
+            TaskTarget.status.in_(["failed", "unassigned", "uncertain"]),
+        )) or 0
+        values: dict[str, Any] = {"status": "completed_with_errors" if failed else "completed"}
+        if failed and not task.error_message:
+            values["error_message"] = f"{failed} 个目标发送失败或未处理"
+        elif not failed:
+            values["error_message"] = None
+        db.execute(update(MarketingTask).where(
+            MarketingTask.id == task.id,
+            MarketingTask.status.in_(["running", "queued"]),
+        ).values(**values))
+        db.commit()
 
     async def execute_task(self, db: Session, task_id: int, owner_id: int | None = None) -> MarketingTask:
         task = self.get_task(db, task_id, owner_id)
@@ -416,9 +951,9 @@ class TaskService:
         db.refresh(task)
         return task
 
-    def serialize_task(self, task: MarketingTask) -> dict[str, Any]:
+    def serialize_task(self, task: MarketingTask, db: Session | None = None) -> dict[str, Any]:
         targets = parse_targets(task.targets_text, task.target_type)
-        return {
+        payload = {
             "id": task.id,
             "name": task.name,
             "content": task.content,
@@ -429,6 +964,7 @@ class TaskService:
             "material_group_ids": self._deserialize_group_ids(task.material_group_ids),
             "session_group_id": task.session_group_id,
             "target_type": task.target_type or "phone",
+            "target_source": task.target_source or "imported",
             "targets": targets,
             "messages_per_target": task.messages_per_target,
             "status": task.status,
@@ -440,6 +976,9 @@ class TaskService:
             "created_at": task.created_at.isoformat() if task.created_at else None,
             "updated_at": task.updated_at.isoformat() if task.updated_at else None,
         }
+        if db is not None:
+            payload["stats"] = self.task_stats(db, task)
+        return payload
 
     async def _send_message(
         self,
@@ -462,37 +1001,54 @@ class TaskService:
             await asyncio.wait_for(client.connect(), timeout=10)
             if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
                 raise RuntimeError("Session is not authorized")
-            entity = await self._resolve_target_entity(client, target_phone, target_type, target_tg_id, target_access_hash)
-            outbound_payloads = payloads or [{"content": content, "image_path": image_path, "contact_card": contact_card}]
-            sent_message_ids: list[int | None] = []
-            for payload in outbound_payloads:
-                try:
-                    message_id = await self._send_payload(client, entity, payload)
-                except Exception as exc:
-                    if target_type != "phone" or not self._is_invalid_peer_error(exc):
-                        raise
-                    entity = await self._resolve_target_entity(client, target_phone, target_type, None, None, force_contact=True)
-                    message_id = await self._send_payload(client, entity, payload)
-                sent_message_ids.append(message_id)
-            nickname = " ".join(part for part in [getattr(entity, "first_name", None), getattr(entity, "last_name", None)] if part)
-            entity_id = getattr(entity, "id", None) or getattr(entity, "user_id", None)
-            access_hash = getattr(entity, "access_hash", None)
-            username = normalize_username(getattr(entity, "username", None))
-            phone_number = getattr(entity, "phone", None)
-            if phone_number and not str(phone_number).startswith("+"):
-                phone_number = f"+{phone_number}"
-            return {
-                "tg_id": str(entity_id) if entity_id else target_tg_id,
-                "access_hash": str(access_hash) if access_hash else None,
-                "username": username or (normalize_username(target_phone) if target_type == "username" else None),
-                "phone_number": str(phone_number) if phone_number else (target_phone if target_type == "phone" else None),
-                "nickname": nickname or username or target_phone,
-                "message_ids": sent_message_ids,
-            }
+            return await self._send_message_with_client(
+                client, target_phone, content, image_path, contact_card, target_type,
+                target_tg_id, target_access_hash, payloads,
+            )
         finally:
             if client.is_connected():
                 await client.disconnect()
             await incoming_message_listener.resume_session(session.id)
+
+    async def _send_message_with_client(
+        self,
+        client: Any,
+        target: str,
+        content: str,
+        image_path: str | None,
+        contact_card: str | None,
+        target_type: str,
+        target_tg_id: str | None = None,
+        target_access_hash: str | None = None,
+        payloads: list[dict[str, str | None]] | None = None,
+    ) -> dict[str, Any]:
+        entity = await self._resolve_target_entity(client, target, target_type, target_tg_id, target_access_hash)
+        outbound_payloads = payloads or [{"content": content, "image_path": image_path, "contact_card": contact_card}]
+        sent_message_ids: list[int | None] = []
+        for payload in outbound_payloads:
+            try:
+                message_id = await self._send_payload(client, entity, payload)
+            except Exception as exc:
+                if target_type != "phone" or not self._is_invalid_peer_error(exc):
+                    raise
+                entity = await self._resolve_target_entity(client, target, target_type, None, None, force_contact=True)
+                message_id = await self._send_payload(client, entity, payload)
+            sent_message_ids.append(message_id)
+        nickname = " ".join(part for part in [getattr(entity, "first_name", None), getattr(entity, "last_name", None)] if part)
+        entity_id = getattr(entity, "id", None) or getattr(entity, "user_id", None)
+        access_hash = getattr(entity, "access_hash", None)
+        username = normalize_username(getattr(entity, "username", None))
+        phone_number = getattr(entity, "phone", None)
+        if phone_number and not str(phone_number).startswith("+"):
+            phone_number = f"+{phone_number}"
+        return {
+            "tg_id": str(entity_id) if entity_id else target_tg_id,
+            "access_hash": str(access_hash) if access_hash else None,
+            "username": username or (normalize_username(target) if target_type == "username" else None),
+            "phone_number": str(phone_number) if phone_number else (target if target_type == "phone" else None),
+            "nickname": nickname or username or target,
+            "message_ids": sent_message_ids,
+        }
 
     async def _resolve_target_entity(
         self,
@@ -549,6 +1105,67 @@ class TaskService:
         if send_type not in {"single", "group", "concat"}:
             raise ValueError("Send type must be single, group or concat")
         return send_type
+
+    def _validate_target_source(self, target_source: str) -> str:
+        if target_source not in {"imported", "contacts"}:
+            raise ValueError("Target source must be imported or contacts")
+        return target_source
+
+    async def _assign_contact_targets(
+        self,
+        db: Session,
+        client: Any,
+        task: MarketingTask,
+        session: TelegramSession,
+        target_rows: list[TaskTarget],
+    ) -> None:
+        unresolved = [row for row in target_rows if row.target.startswith("__contact_slot__:") and row.status in {"queued", "processing"}]
+        if not unresolved:
+            return
+        result = await asyncio.wait_for(client(GetContactsRequest(hash=0)), timeout=30)
+        users = [user for user in (getattr(result, "users", []) or []) if getattr(user, "id", None)]
+        random.shuffle(users)
+        used_ids = {
+            str((json.loads(row.payload_json) or {}).get("contact", {}).get("tg_id"))
+            for row in target_rows if row.payload_json and isinstance(json.loads(row.payload_json), dict)
+        }
+        available = [user for user in users if str(user.id) not in used_ids]
+        shortage = max(len(unresolved) - len(available), 0)
+        for index, row in enumerate(unresolved):
+            if index >= len(available):
+                row.status = "skipped"
+                row.error_message = None
+                row.finished_at = datetime.utcnow()
+                continue
+            user = available[index]
+            username = normalize_username(getattr(user, "username", None))
+            phone = getattr(user, "phone", None)
+            if phone and not str(phone).startswith("+"):
+                phone = f"+{phone}"
+            display = username or phone or str(user.id)
+            existing = json.loads(row.payload_json) if row.payload_json else None
+            materials = existing if isinstance(existing, list) else (existing or {}).get("materials")
+            row.target = f"contact:{session.id}:{user.id}"
+            row.payload_json = json.dumps({
+                "materials": materials,
+                "contact": {
+                    "display": display,
+                    "tg_id": str(user.id),
+                    "access_hash": str(getattr(user, "access_hash", "") or ""),
+                    "username": username,
+                    "phone": phone,
+                },
+            }, ensure_ascii=False)
+        if shortage:
+            db.execute(
+                update(MarketingTask)
+                .where(MarketingTask.id == task.id)
+                .values(total_targets=case(
+                    (MarketingTask.total_targets >= shortage, MarketingTask.total_targets - shortage),
+                    else_=0,
+                ))
+            )
+        db.commit()
 
     def _validate_material_group(self, db: Session, group_id: int | None, owner_id: int | None) -> list[Material]:
         if group_id is None:

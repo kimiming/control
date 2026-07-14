@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -20,6 +20,7 @@ class MarketingTask(Base):
     material_group_ids: Mapped[str | None] = mapped_column(Text, nullable=True)
     session_group_id: Mapped[int | None] = mapped_column(ForeignKey("session_groups.id", ondelete="SET NULL"), nullable=True, index=True)
     target_type: Mapped[str] = mapped_column(String(20), default="phone", index=True)
+    target_source: Mapped[str] = mapped_column(String(20), default="imported", index=True)
     targets_text: Mapped[str] = mapped_column(Text)
     messages_per_target: Mapped[int] = mapped_column(Integer, default=3)
     status: Mapped[str] = mapped_column(String(50), default="draft", index=True)
@@ -32,4 +33,46 @@ class MarketingTask(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
-__all__ = ["MarketingTask"]
+class TaskTarget(Base):
+    """Durable assignment and idempotency record for one task target."""
+
+    __tablename__ = "task_targets"
+    __table_args__ = (
+        UniqueConstraint("task_id", "target", name="uq_task_targets_task_target"),
+        Index("ix_task_targets_task_status", "task_id", "status"),
+        Index("ix_task_targets_session_status", "session_id", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    task_id: Mapped[int] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False, index=True)
+    session_id: Mapped[int | None] = mapped_column(ForeignKey("sessions.id", ondelete="SET NULL"), nullable=True, index=True)
+    target: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    payload_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(30), default="queued", nullable=False, index=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class TaskOutbox(Base):
+    """Transactional hand-off from MySQL task state to the Redis queue."""
+
+    __tablename__ = "task_outbox"
+    __table_args__ = (Index("ix_task_outbox_status_created", "status", "created_at"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    task_id: Mapped[int | None] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"), nullable=True, index=True)
+    event_type: Mapped[str] = mapped_column(String(30), nullable=False, index=True)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(30), default="pending", nullable=False, index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+__all__ = ["MarketingTask", "TaskTarget", "TaskOutbox"]

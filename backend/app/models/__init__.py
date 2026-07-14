@@ -5,11 +5,13 @@ from app.models.material import Material, MaterialGroup
 from app.models.proxy import ProxyConfig
 from app.models.session import SessionGroup, SessionLog, SessionStatus, SessionTaskLog, TelegramSession
 from app.models.support_agent import SupportAgent
-from app.models.task import MarketingTask
+from app.models.task import MarketingTask, TaskOutbox, TaskTarget
 from app.models.user import User
 
 __all__ = [
     "MarketingTask",
+    "TaskTarget",
+    "TaskOutbox",
     "Customer",
     "CustomerProfile",
     "Material",

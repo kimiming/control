@@ -1,11 +1,14 @@
 import asyncio
 import contextlib
+import time
+from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import or_, select, update
 from telethon import events
 
+from app.core.config import get_settings
 from app.core.database import SessionLocal
 from app.core.telegram import build_client
 from app.models.customer import Customer
@@ -14,11 +17,17 @@ from app.models.session import SessionStatus, TelegramSession
 from app.services.proxy_service import proxy_service
 from app.services.target_parser import normalize_username
 
+settings = get_settings()
+
 
 class IncomingMessageListener:
     def __init__(self) -> None:
         self._tasks: dict[int, asyncio.Task[Any]] = {}
         self._clients: dict[int, Any] = {}
+        self._paused_ids: set[int] = set()
+        self._operation_locks: dict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
+        self._rotation_offset = 0
+        self._last_rotation = 0.0
         self._monitor_task: asyncio.Task[Any] | None = None
         self._stop_event = asyncio.Event()
 
@@ -44,9 +53,11 @@ class IncomingMessageListener:
         self._clients.clear()
 
     async def pause_session(self, session_id: int) -> None:
+        self._paused_ids.add(session_id)
         await self._stop_session(session_id)
 
     async def resume_session(self, session_id: int) -> None:
+        self._paused_ids.discard(session_id)
         db = SessionLocal()
         try:
             session = db.get(TelegramSession, session_id)
@@ -55,6 +66,21 @@ class IncomingMessageListener:
             db.close()
         if should_listen and session_id not in self._tasks:
             self._tasks[session_id] = asyncio.create_task(self._listen_session(session_id))
+
+    def get_connected_client(self, session_id: int) -> Any | None:
+        """Return the listener-owned client so send jobs can reuse one SQLite session connection."""
+        client = self._clients.get(session_id)
+        if client and client.is_connected():
+            return client
+        return None
+
+    async def acquire_client_operation(self, session_id: int) -> None:
+        await self._operation_locks[session_id].acquire()
+
+    def release_client_operation(self, session_id: int) -> None:
+        lock = self._operation_locks.get(session_id)
+        if lock and lock.locked():
+            lock.release()
 
     async def _monitor_loop(self) -> None:
         while not self._stop_event.is_set():
@@ -67,12 +93,26 @@ class IncomingMessageListener:
     async def _sync_sessions(self) -> None:
         db = SessionLocal()
         try:
-            sessions = list(db.scalars(select(TelegramSession).where(TelegramSession.status == SessionStatus.connected)).all())
-            active_ids = {session.id for session in sessions}
+            sessions = list(db.scalars(
+                select(TelegramSession)
+                .where(TelegramSession.status == SessionStatus.connected)
+                .order_by(TelegramSession.last_login_at.desc(), TelegramSession.id.asc())
+            ).all())
         finally:
             db.close()
 
+        max_active = max(settings.session_max_active_clients, 1)
+        if len(sessions) > max_active:
+            now = time.monotonic()
+            if now - self._last_rotation >= 300:
+                self._rotation_offset = (self._rotation_offset + max_active) % len(sessions) if self._last_rotation else 0
+                self._last_rotation = now
+            sessions = (sessions + sessions)[self._rotation_offset : self._rotation_offset + max_active]
+        active_ids = {session.id for session in sessions}
+
         for session in sessions:
+            if session.id in self._paused_ids:
+                continue
             task = self._tasks.get(session.id)
             if not task or task.done():
                 self._tasks[session.id] = asyncio.create_task(self._listen_session(session.id))
