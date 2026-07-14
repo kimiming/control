@@ -67,6 +67,8 @@ const buildTaskFormData = (values) => {
     formData.append('session_group_id', values.session_group_id);
   }
   formData.append('messages_per_target', values.messages_per_target ?? 3);
+  formData.append('send_interval_min', values.send_interval_min ?? 3);
+  formData.append('send_interval_max', values.send_interval_max ?? 5);
   if (values.send_type === 'single' && values.content_mode === 'material' && values.content_material_id) {
     formData.append('content_material_id', values.content_material_id);
   }
@@ -158,10 +160,12 @@ export default function Tasks() {
         target_type: editing.target_type || 'phone',
         session_group_id: editing.session_group_id,
         messages_per_target: editing.messages_per_target,
+        send_interval_min: editing.send_interval_min ?? 3,
+        send_interval_max: editing.send_interval_max ?? 5,
         contact_material_id: editing.contact_card ? '__existing__' : undefined,
       });
     } else {
-      form.setFieldsValue({ messages_per_target: 3, send_type: 'single', content_mode: 'manual', image_mode: 'manual', targets_mode: 'manual', target_source: 'imported', target_type: 'phone' });
+      form.setFieldsValue({ messages_per_target: 3, send_interval_min: 3, send_interval_max: 5, send_type: 'single', content_mode: 'manual', image_mode: 'manual', targets_mode: 'manual', target_source: 'imported', target_type: 'phone' });
     }
   }, [editing, form, modalOpen]);
 
@@ -647,6 +651,44 @@ export default function Tasks() {
           <Form.Item name="messages_per_target" label="每个Session成功发送条数" rules={[{ required: true, message: '请输入发送条数' }]}>
             <InputNumber min={1} max={50} style={{ width: '100%' }} />
           </Form.Item>
+          <Form.Item label="每条发送间隔" extra="同一个Session每发送一个客户后，将在此范围内随机等待；默认3～5秒。">
+            <Space.Compact block>
+              <Form.Item
+                name="send_interval_min"
+                noStyle
+                dependencies={['send_interval_max']}
+                rules={[
+                  { required: true, message: '请输入最小间隔' },
+                  ({ getFieldValue }) => ({
+                    validator(_, value) {
+                      const maximum = getFieldValue('send_interval_max');
+                      if (value == null || maximum == null || value <= maximum) return Promise.resolve();
+                      return Promise.reject(new Error('最小间隔不能大于最大间隔'));
+                    },
+                  }),
+                ]}
+              >
+                <InputNumber min={0} max={3600} precision={0} addonBefore="最小" addonAfter="秒" style={{ width: '50%' }} />
+              </Form.Item>
+              <Form.Item
+                name="send_interval_max"
+                noStyle
+                dependencies={['send_interval_min']}
+                rules={[
+                  { required: true, message: '请输入最大间隔' },
+                  ({ getFieldValue }) => ({
+                    validator(_, value) {
+                      const minimum = getFieldValue('send_interval_min');
+                      if (value == null || minimum == null || value >= minimum) return Promise.resolve();
+                      return Promise.reject(new Error('最大间隔不能小于最小间隔'));
+                    },
+                  }),
+                ]}
+              >
+                <InputNumber min={0} max={3600} precision={0} addonBefore="最大" addonAfter="秒" style={{ width: '50%' }} />
+              </Form.Item>
+            </Space.Compact>
+          </Form.Item>
         </Form>
       </Modal>
 
@@ -675,6 +717,7 @@ export default function Tasks() {
               <Descriptions.Item label="Session分类">{viewing.session_group_id ? groupNameMap.get(viewing.session_group_id) || viewing.session_group_id : '全部已连接'}</Descriptions.Item>
               <Descriptions.Item label="发送对象">{viewing.target_source === 'contacts' ? '联系人好友' : (viewing.target_type === 'username' ? '导入用户名' : '导入手机号')}</Descriptions.Item>
               <Descriptions.Item label="每Session条数">{viewing.messages_per_target}</Descriptions.Item>
+              <Descriptions.Item label="发送间隔">随机 {viewing.send_interval_min ?? 3}～{viewing.send_interval_max ?? 5} 秒</Descriptions.Item>
               <Descriptions.Item label="目标数">{viewing.total_targets}</Descriptions.Item>
               <Descriptions.Item label="状态">{statusText[viewing.status] || viewing.status}</Descriptions.Item>
               <Descriptions.Item label="成功/失败">{viewing.sent_count} / {viewing.failed_count}</Descriptions.Item>

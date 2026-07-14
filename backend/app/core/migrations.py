@@ -34,6 +34,8 @@ def run_lightweight_migrations() -> None:
             "CREATE INDEX ix_session_task_logs_task_status_created ON session_task_logs (task_id, status, created_at)",
             "ALTER TABLE sessions ADD COLUMN contact_count INTEGER NULL",
             "ALTER TABLE sessions ADD COLUMN contacts_scanned_at DATETIME NULL",
+            "ALTER TABLE tasks ADD COLUMN send_interval_min INTEGER NOT NULL DEFAULT 3",
+            "ALTER TABLE tasks ADD COLUMN send_interval_max INTEGER NOT NULL DEFAULT 5",
         ]
         with engine.begin() as connection:
             for statement in statements:
@@ -148,6 +150,8 @@ def run_lightweight_migrations() -> None:
         "CREATE INDEX ix_session_task_logs_task_status_created ON session_task_logs (task_id, status, created_at)",
         "ALTER TABLE sessions ADD COLUMN contact_count INT NULL",
         "ALTER TABLE sessions ADD COLUMN contacts_scanned_at DATETIME NULL",
+        "ALTER TABLE tasks ADD COLUMN send_interval_min INT NOT NULL DEFAULT 3",
+        "ALTER TABLE tasks ADD COLUMN send_interval_max INT NOT NULL DEFAULT 5",
     ]
     with engine.begin() as connection:
         for statement in statements:

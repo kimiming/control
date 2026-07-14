@@ -1,4 +1,4 @@
-import { CheckCircleOutlined, ClearOutlined, DeleteOutlined, DisconnectOutlined, ImportOutlined, LinkOutlined, SafetyCertificateOutlined, SearchOutlined, TeamOutlined, UsergroupAddOutlined } from '@ant-design/icons';
+import { CheckCircleOutlined, ClearOutlined, DeleteOutlined, DisconnectOutlined, ImportOutlined, LinkOutlined, ReloadOutlined, SafetyCertificateOutlined, SearchOutlined, TeamOutlined, UsergroupAddOutlined } from '@ant-design/icons';
 import { Button, Card, Drawer, Form, Input, InputNumber, Modal, Popconfirm, Radio, Select, Space, Spin, Table, Tag, Upload, message } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import dayjs from 'dayjs';
@@ -137,9 +137,10 @@ export default function Sessions() {
   const [contactFileList, setContactFileList] = useState([]);
   const [contactImportLimit, setContactImportLimit] = useState(10);
   const [batchImporting, setBatchImporting] = useState(false);
+  const [manualRefreshing, setManualRefreshing] = useState(false);
   const [groupForm] = Form.useForm();
 
-  const { data: sessions = [], isLoading } = useQuery({
+  const { data: sessions = [], isLoading, isFetching: sessionsFetching, refetch: refreshSessions } = useQuery({
     queryKey: ['sessions', filters],
     queryFn: () => getSessions(filters),
   });
@@ -162,11 +163,14 @@ export default function Sessions() {
     socket.onmessage = (event) => {
       const payload = JSON.parse(event.data);
       if (payload.event === 'deleted') {
-        queryClient.setQueryData(['sessions'], (old = []) => old.filter((item) => item.id !== payload.id));
+        queryClient.setQueriesData({ queryKey: ['sessions'] }, (old = []) => (
+          Array.isArray(old) ? old.filter((item) => item.id !== payload.id) : old
+        ));
         return;
       }
       if (payload.session) {
-        queryClient.setQueryData(['sessions'], (old = []) => {
+        queryClient.setQueriesData({ queryKey: ['sessions'] }, (old = []) => {
+          if (!Array.isArray(old)) return old;
           const exists = old.some((item) => item.id === payload.session.id);
           if (!exists) return [payload.session, ...old];
           return old.map((item) => (item.id === payload.session.id ? { ...item, ...payload.session } : item));
@@ -180,7 +184,8 @@ export default function Sessions() {
   const saveMutation = useMutation({
     mutationFn: (values) => (editing ? updateSession(editing.id, values) : createSession(values)),
     onSuccess: (data) => {
-      queryClient.setQueryData(['sessions'], (old = []) => {
+      queryClient.setQueriesData({ queryKey: ['sessions'] }, (old = []) => {
+        if (!Array.isArray(old)) return old;
         const exists = old.some((item) => item.id === data.id);
         return exists ? old.map((item) => (item.id === data.id ? data : item)) : [data, ...old];
       });
@@ -191,16 +196,30 @@ export default function Sessions() {
 
   const actionMutation = useMutation({
     mutationFn: ({ id, action }) => updateSession(id, { action }),
-    onSuccess: (data) => {
-      queryClient.setQueryData(['sessions'], (old = []) => old.map((item) => (item.id === data.id ? data : item)));
+    onSuccess: (data, variables) => {
+      queryClient.setQueriesData({ queryKey: ['sessions'] }, (old = []) => (
+        Array.isArray(old) ? old.map((item) => (item.id === data.id ? { ...item, ...data } : item)) : old
+      ));
+      if (variables.action === 'connect' && data.status !== 'connected') {
+        message.warning(`Session连接未成功：${data.error_message || '请查看连接状态'}`, 8);
+      } else {
+        message.success(variables.action === 'connect' ? 'Session连接成功' : 'Session已断开');
+      }
     },
+    onError: (error) => message.error(error?.response?.data?.detail || error.message || 'Session操作失败'),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ['sessions'] }),
   });
 
   const deleteMutation = useMutation({
     mutationFn: (record) => deleteSession(record.id),
     onSuccess: (_, record) => {
-      queryClient.setQueryData(['sessions'], (old = []) => old.filter((item) => item.id !== record.id));
+      queryClient.setQueriesData({ queryKey: ['sessions'] }, (old = []) => (
+        Array.isArray(old) ? old.filter((item) => item.id !== record.id) : old
+      ));
+      message.success('Session已删除');
     },
+    onError: (error) => message.error(error?.response?.data?.detail || error.message || '删除Session失败'),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ['sessions'] }),
   });
 
   const batchDeleteMutation = useMutation({
@@ -392,7 +411,8 @@ export default function Sessions() {
     },
   }), [queryClient]);
 
-  const batchLoadingTip = batchImporting ? '正在批量导入Session…'
+  const batchLoadingTip = manualRefreshing ? '正在刷新Session列表…'
+    : batchImporting ? '正在批量导入Session…'
     : batchDeleteMutation.isPending ? '正在批量删除Session…'
       : batchConnectMutation.isPending ? '正在批量连接Session…'
         : batchDisconnectMutation.isPending ? '正在批量断开Session…'
@@ -406,6 +426,22 @@ export default function Sessions() {
                       : moveProxyMutation.isPending ? '正在批量移动代理…'
                         : '';
   const batchOperationPending = Boolean(batchLoadingTip);
+
+  const handleRefreshSessions = async () => {
+    if (manualRefreshing) return;
+    setManualRefreshing(true);
+    try {
+      await Promise.all([
+        refreshSessions(),
+        new Promise((resolve) => setTimeout(resolve, 600)),
+      ]);
+      message.success('Session列表已刷新');
+    } catch (error) {
+      message.error(error?.response?.data?.detail || error.message || '刷新Session列表失败');
+    } finally {
+      setManualRefreshing(false);
+    }
+  };
 
   const renderSupportAgentOption = (option) => {
     if (option.value === 0) return <Tag>未绑定</Tag>;
@@ -484,6 +520,15 @@ export default function Sessions() {
             onChange={(value) => setFilters((old) => ({ ...old, health_status: value }))}
             options={healthStatusOptions}
           />
+          <Button
+            type="primary"
+            ghost
+            icon={<ReloadOutlined />}
+            loading={manualRefreshing || (sessionsFetching && !isLoading)}
+            onClick={handleRefreshSessions}
+          >
+            刷新列表
+          </Button>
           <Button onClick={() => setFilters({})}>重置</Button>
         </Space>
       </Card>
@@ -657,6 +702,9 @@ export default function Sessions() {
         onContactImport={(record) => { setContactFileList([]); setContactImportLimit(10); setContactImportTarget({ mode: 'single', session: record }); }}
         contactOperatingSessionId={contactMutation.isPending ? contactMutation.variables?.record?.id : null}
         checkingSessionId={batchBidirectionalMutation.isPending ? -1 : (bidirectionalMutation.isPending ? bidirectionalMutation.variables?.id : null)}
+        connectionOperatingSessionId={actionMutation.isPending ? actionMutation.variables?.id : null}
+        connectionOperatingAction={actionMutation.isPending ? actionMutation.variables?.action : null}
+        deletingSessionId={deleteMutation.isPending ? deleteMutation.variables?.id : null}
       />
       <SessionModal
         open={modalOpen}

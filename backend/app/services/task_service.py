@@ -47,6 +47,8 @@ class TaskService:
         content: str,
         session_group_id: int | None,
         messages_per_target: int,
+        send_interval_min: int,
+        send_interval_max: int,
         targets_file: UploadFile,
         image: UploadFile | None = None,
         content_material_id: int | None = None,
@@ -60,6 +62,7 @@ class TaskService:
         target_source: str = "imported",
         owner_id: int | None = None,
     ) -> MarketingTask:
+        send_interval_min, send_interval_max = self._validate_send_interval(send_interval_min, send_interval_max)
         target_source = self._validate_target_source(target_source)
         target_type = validate_target_type(target_type)
         targets = await self._resolve_targets(db, targets_file, customer_profile_id, target_type, owner_id) if target_source == "imported" else []
@@ -88,6 +91,8 @@ class TaskService:
             content=content,
             session_group_id=session_group_id,
             messages_per_target=messages_per_target,
+            send_interval_min=send_interval_min,
+            send_interval_max=send_interval_max,
             target_type=target_type,
             target_source=target_source,
             targets_text="\n".join(targets),
@@ -111,6 +116,8 @@ class TaskService:
         content: str,
         session_group_id: int | None,
         messages_per_target: int,
+        send_interval_min: int,
+        send_interval_max: int,
         targets_file: UploadFile | None = None,
         image: UploadFile | None = None,
         content_material_id: int | None = None,
@@ -155,6 +162,7 @@ class TaskService:
                 task.content = content
         task.session_group_id = session_group_id
         task.messages_per_target = messages_per_target
+        task.send_interval_min, task.send_interval_max = self._validate_send_interval(send_interval_min, send_interval_max)
         target_source = self._validate_target_source(target_source)
         target_type = validate_target_type(target_type)
         if target_source == "contacts":
@@ -610,7 +618,7 @@ class TaskService:
             elif not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
                 raise RuntimeError("Session is not authorized")
 
-            for item in targets:
+            for item_index, item in enumerate(targets):
                 db.refresh(task)
                 db.refresh(item)
                 if task.status in {"paused", "cancelling", "cancelled"}:
@@ -695,6 +703,10 @@ class TaskService:
                         db.commit()
                         break
                     db.commit()
+                if item_index < len(targets) - 1:
+                    delay = random.uniform(task.send_interval_min or 0, task.send_interval_max or 0)
+                    if delay > 0:
+                        await asyncio.sleep(delay)
             await self._finish_background_task(db, task)
         except Exception as exc:
             if 'task' in locals() and task:
@@ -969,6 +981,8 @@ class TaskService:
             "target_source": task.target_source or "imported",
             "targets": targets,
             "messages_per_target": task.messages_per_target,
+            "send_interval_min": task.send_interval_min if task.send_interval_min is not None else 3,
+            "send_interval_max": task.send_interval_max if task.send_interval_max is not None else 5,
             "status": task.status,
             "total_targets": task.total_targets,
             "sent_count": task.sent_count,
@@ -1107,6 +1121,17 @@ class TaskService:
         if send_type not in {"single", "group", "concat"}:
             raise ValueError("Send type must be single, group or concat")
         return send_type
+
+    def _validate_send_interval(self, minimum: int, maximum: int) -> tuple[int, int]:
+        minimum = 3 if minimum is None else int(minimum)
+        maximum = 5 if maximum is None else int(maximum)
+        if minimum < 0 or maximum < 0:
+            raise ValueError("发送间隔不能小于0秒")
+        if maximum < minimum:
+            raise ValueError("最大发送间隔不能小于最小发送间隔")
+        if maximum > 3600:
+            raise ValueError("发送间隔不能超过3600秒")
+        return minimum, maximum
 
     def _validate_target_source(self, target_source: str) -> str:
         if target_source not in {"imported", "contacts"}:

@@ -23,6 +23,8 @@ class MarketingTask(Base):
     target_source: Mapped[str] = mapped_column(String(20), default="imported", index=True)
     targets_text: Mapped[str] = mapped_column(Text)
     messages_per_target: Mapped[int] = mapped_column(Integer, default=3)
+    send_interval_min: Mapped[int] = mapped_column(Integer, default=3)
+    send_interval_max: Mapped[int] = mapped_column(Integer, default=5)
     status: Mapped[str] = mapped_column(String(50), default="draft", index=True)
     total_targets: Mapped[int] = mapped_column(Integer, default=0)
     sent_count: Mapped[int] = mapped_column(Integer, default=0)

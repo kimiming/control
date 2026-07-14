@@ -78,6 +78,9 @@ export default function SessionList({
   onContactImport,
   contactOperatingSessionId,
   checkingSessionId,
+  connectionOperatingSessionId,
+  connectionOperatingAction,
+  deletingSessionId,
 }) {
   const columns = [
     {
@@ -179,11 +182,24 @@ export default function SessionList({
         <Space>
           {record.status === 'connected' ? (
             <Tooltip title="断开">
-              <Button type="primary" danger icon={<DisconnectOutlined />} onClick={() => onDisconnect(record)} />
+              <Button
+                type="primary"
+                danger
+                icon={<DisconnectOutlined />}
+                loading={connectionOperatingSessionId === record.id && connectionOperatingAction === 'disconnect'}
+                disabled={connectionOperatingSessionId != null && connectionOperatingSessionId !== record.id}
+                onClick={() => onDisconnect(record)}
+              />
             </Tooltip>
           ) : (
             <Tooltip title="连接">
-              <Button type="primary" icon={<LinkOutlined />} onClick={() => onConnect(record)} loading={record.status === 'connecting'} />
+              <Button
+                type="primary"
+                icon={<LinkOutlined />}
+                onClick={() => onConnect(record)}
+                loading={record.status === 'connecting' || (connectionOperatingSessionId === record.id && connectionOperatingAction === 'connect')}
+                disabled={connectionOperatingSessionId != null && connectionOperatingSessionId !== record.id}
+              />
             </Tooltip>
           )}
           <Tooltip title="编辑">
@@ -202,7 +218,12 @@ export default function SessionList({
           </Tooltip>
           <Popconfirm title="确认删除该Session？" onConfirm={() => onDelete(record)}>
             <Tooltip title="删除">
-              <Button danger icon={<DeleteOutlined />} />
+              <Button
+                danger
+                icon={<DeleteOutlined />}
+                loading={deletingSessionId === record.id}
+                disabled={deletingSessionId != null && deletingSessionId !== record.id}
+              />
             </Tooltip>
           </Popconfirm>
           <Popover
