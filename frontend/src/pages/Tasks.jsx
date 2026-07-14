@@ -511,7 +511,7 @@ export default function Tasks() {
             <Form.Item
               name="material_group_ids"
               label="选择拼接素材分组"
-              extra="按选择顺序，每个分组仅从文字素材中按优先级加权随机抽取一条，再用换行拼成一条消息。"
+              extra="按选择顺序，每个分组仅从文字素材中按优先级加权随机抽取一条，前一条结尾直接连接后一条开头，不自动添加换行或空格。"
               rules={[{ required: true, type: 'array', min: 2, message: '至少选择两个文字素材分组' }]}
             >
               <Select

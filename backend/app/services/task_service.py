@@ -1215,14 +1215,13 @@ class TaskService:
                 raise ValueError(f"Material group '{group.name}' has no usable text material")
             material_groups.append(text_materials)
         maximum_length = sum(max(len((material.content or "").strip()) for material in materials) for materials in material_groups)
-        maximum_length += len(material_groups) - 1
         if maximum_length > 4096:
             raise ValueError("Concat result may exceed Telegram's 4096-character message limit")
         return material_groups
 
     def _concat_payload(self, material_groups: list[list[Material]]) -> dict[str, str | None]:
         selected = [self._weighted_random_choice(materials) for materials in material_groups]
-        content = "\n".join((material.content or "").strip() for material in selected)
+        content = "".join((material.content or "").strip() for material in selected)
         return {"content": content, "image_path": None, "contact_card": None}
 
     def _weighted_random_choice(self, materials: list[Material]) -> Material:
