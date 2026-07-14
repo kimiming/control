@@ -1,10 +1,11 @@
 import { ClearOutlined, PaperClipOutlined, SendOutlined, SearchOutlined, StarFilled, StarOutlined } from '@ant-design/icons';
 import { Avatar, Badge, Button, Card, Empty, Image, Input, List, Popover, Radio, Select, Space, Tabs, Tag, Tooltip, Typography, message } from 'antd';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import dayjs from 'dayjs';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { FixedSizeList as VirtualList } from 'react-window';
 
-import { getCustomerMessages, getCustomers, getMaterials, getSupportAgents, replyCustomer, updateCustomerFavorite } from '../api/index.js';
+import { getConversations, getCustomerMessages, getMaterials, getSupportAgents, replyCustomer, updateCustomerFavorite } from '../api/index.js';
 
 const statusColor = {
   success: 'green',
@@ -46,6 +47,9 @@ export default function Messages() {
   const [kfId, setKfId] = useState();
   const [replyStatus, setReplyStatus] = useState();
   const [chatTab, setChatTab] = useState('all');
+  const customerListRef = useRef(null);
+  const chatMessagesRef = useRef(null);
+  const [customerListHeight, setCustomerListHeight] = useState(400);
 
   const { data: agents = [] } = useQuery({
     queryKey: ['support-agents'],
@@ -65,11 +69,21 @@ export default function Messages() {
     return params;
   }, [keyword, kfId, replyStatus, chatTab]);
 
-  const { data: customers = [], isLoading } = useQuery({
+  const customerQuery = useInfiniteQuery({
     queryKey: ['customers', customerParams],
-    queryFn: () => getCustomers(customerParams),
+    queryFn: ({ pageParam }) => getConversations({ ...customerParams, page: pageParam, page_size: 20 }),
+    initialPageParam: 1,
+    getNextPageParam: (lastPage) => lastPage.has_more ? lastPage.page + 1 : undefined,
     refetchInterval: 5000,
   });
+  const customers = useMemo(() => {
+    const seen = new Set();
+    return (customerQuery.data?.pages || []).flatMap((page) => page.items || []).filter((item) => {
+      if (seen.has(item.id)) return false;
+      seen.add(item.id);
+      return true;
+    });
+  }, [customerQuery.data]);
 
   const selectedCustomer = useMemo(
     () => customers.find((item) => item.id === selected?.id) || selected,
@@ -80,12 +94,46 @@ export default function Messages() {
     [materials, materialId],
   );
 
-  const { data: messages = [] } = useQuery({
+  const messageQuery = useInfiniteQuery({
     queryKey: ['customer-messages', selectedCustomer?.id],
-    queryFn: () => getCustomerMessages(selectedCustomer.id, { limit: 200 }),
+    queryFn: ({ pageParam }) => getCustomerMessages(selectedCustomer.id, { page_size: 20, before_id: pageParam || undefined }),
+    initialPageParam: null,
+    getNextPageParam: (lastPage) => lastPage.has_more ? lastPage.next_before_id : undefined,
     enabled: Boolean(selectedCustomer?.id),
     refetchInterval: selectedCustomer?.id ? 3000 : false,
   });
+  const messages = useMemo(() => {
+    const seen = new Set();
+    return [...(messageQuery.data?.pages || [])].reverse().flatMap((page) => page.items || []).filter((item) => {
+      if (seen.has(item.id)) return false;
+      seen.add(item.id);
+      return true;
+    });
+  }, [messageQuery.data]);
+
+  useEffect(() => {
+    const element = customerListRef.current;
+    if (!element) return undefined;
+    const updateHeight = () => setCustomerListHeight(Math.max(element.clientHeight, 120));
+    updateHeight();
+    const observer = new ResizeObserver(updateHeight);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    const element = chatMessagesRef.current;
+    if (!element || !selectedCustomer?.id) return;
+    requestAnimationFrame(() => { element.scrollTop = element.scrollHeight; });
+  }, [selectedCustomer?.id]);
+
+  const loadOlderMessages = async (event) => {
+    const element = event.currentTarget;
+    if (element.scrollTop > 60 || !messageQuery.hasNextPage || messageQuery.isFetchingNextPage) return;
+    const oldHeight = element.scrollHeight;
+    await messageQuery.fetchNextPage();
+    requestAnimationFrame(() => { element.scrollTop = element.scrollHeight - oldHeight; });
+  };
 
   const replyMutation = useMutation({
     mutationFn: () => replyCustomer(selectedCustomer.id, { text: replyText.trim() || undefined, material_id: materialId }),
@@ -253,10 +301,23 @@ export default function Messages() {
             { key: 'favorites', label: '收藏聊天' },
           ]}
         />
-        <List
-          loading={isLoading}
-          dataSource={customers}
-          renderItem={(item) => (
+        <div className="customer-virtual-list" ref={customerListRef}>
+          <VirtualList
+            height={customerListHeight}
+            width="100%"
+            itemCount={customers.length}
+            itemSize={126}
+            itemData={customers}
+            onItemsRendered={({ visibleStopIndex }) => {
+              if (visibleStopIndex >= customers.length - 3 && customerQuery.hasNextPage && !customerQuery.isFetchingNextPage) {
+                customerQuery.fetchNextPage();
+              }
+            }}
+          >
+            {({ index, style, data }) => {
+              const item = data[index];
+              return (
+            <div style={{ ...style, paddingBottom: 8 }}>
             <List.Item
               className={selectedCustomer?.id === item.id ? 'customer-list-item active' : 'customer-list-item'}
               onClick={() => setSelected(item)}
@@ -300,8 +361,14 @@ export default function Messages() {
                 />
               </Card>
             </List.Item>
-          )}
-        />
+            </div>
+              );
+            }}
+          </VirtualList>
+          {customerQuery.isLoading ? <div className="customer-list-status">正在加载会话…</div> : null}
+          {customerQuery.isFetchingNextPage ? <div className="customer-list-status">正在加载更多…</div> : null}
+          {!customerQuery.isLoading && !customers.length ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无会话" /> : null}
+        </div>
       </aside>
 
       <main className="chat-panel">
@@ -324,7 +391,9 @@ export default function Messages() {
                 </Button>
               </Tooltip>
             </div>
-            <div className="chat-messages">
+            <div className="chat-messages" ref={chatMessagesRef} onScroll={loadOlderMessages}>
+              {messageQuery.isFetchingNextPage ? <div className="chat-history-status">正在加载更早消息…</div> : null}
+              {!messageQuery.hasNextPage && messages.length ? <div className="chat-history-status">已经到最早的消息</div> : null}
               {messages.length ? messages.map((item) => (
                 <div key={item.id} className={item.direction === 'outbound' ? 'chat-bubble outbound' : 'chat-bubble inbound'}>
                   {item.image_path ? (

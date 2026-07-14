@@ -190,8 +190,19 @@ body {
   overflow: hidden;
 }
 
-.customer-sidebar .ant-list {
-  overflow: auto;
+.customer-virtual-list {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.customer-list-status,
+.chat-history-status {
+  padding: 6px 0;
+  color: #98a2b3;
+  font-size: 12px;
+  text-align: center;
 }
 
 .customer-list-item {

@@ -143,6 +143,55 @@ class MaterialService:
         db.commit()
         return {"created": len(materials), "skipped": skipped}
 
+    async def import_image_materials(
+        self,
+        db: Session,
+        files: list[UploadFile],
+        group_id: int | None = None,
+        owner_id: int | None = None,
+    ) -> dict[str, Any]:
+        self._validate_group(db, group_id, owner_id)
+        if not files:
+            raise ValueError("请选择图片文件")
+        if len(files) > 200:
+            raise ValueError("单次最多导入200张图片")
+        if sum(file.size or 0 for file in files) > 180 * 1024 * 1024:
+            raise ValueError("单次图片文件总大小不能超过180MB")
+
+        allowed_suffixes = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
+        materials: list[Material] = []
+        skipped_files: list[str] = []
+        for index, file in enumerate(files, start=1):
+            original_name = Path(file.filename or f"图片{index}").name
+            suffix = Path(original_name).suffix.lower()
+            if suffix not in allowed_suffixes or (file.size is not None and file.size > 20 * 1024 * 1024):
+                skipped_files.append(original_name)
+                continue
+            try:
+                file_path = await self._save_file(file)
+            except ValueError:
+                skipped_files.append(original_name)
+                continue
+            base_name = Path(original_name).stem.strip() or f"导入图片{index}"
+            materials.append(Material(
+                owner_id=owner_id,
+                group_id=group_id,
+                name=base_name[:150],
+                material_type="image",
+                file_path=file_path,
+                priority=0,
+                remark=f"从 {original_name} 批量导入",
+            ))
+        if not materials:
+            raise ValueError("没有可导入的有效图片，每张图片不能超过20MB")
+        db.add_all(materials)
+        db.commit()
+        return {
+            "created": len(materials),
+            "skipped": len(skipped_files),
+            "skipped_files": skipped_files[:20],
+        }
+
     async def update_material(self, db: Session, material_id: int, data: dict[str, Any], file: UploadFile | None = None, owner_id: int | None = None) -> Material:
         material = self.get_material(db, material_id, owner_id)
         self._validate_group(db, data.get("group_id"), owner_id)

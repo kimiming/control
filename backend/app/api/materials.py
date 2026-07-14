@@ -101,6 +101,19 @@ async def import_text_materials(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@router.post("/import-images")
+async def import_image_materials(
+    files: list[UploadFile] = File(...),
+    group_id: int | None = Form(None),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    try:
+        return await material_service.import_image_materials(db, files, group_id, user.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.get("/{material_id}")
 def get_material(material_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
     try:

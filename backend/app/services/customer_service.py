@@ -33,6 +33,40 @@ class CustomerService:
         is_favorite: bool | None = None,
         owner_id: int | None = None,
     ) -> list[dict[str, Any]]:
+        stmt = self._customer_list_stmt(kf_id, keyword, reply_status, is_favorite, owner_id)
+        return [self.serialize_customer(db, customer, session, agent) for customer, session, agent in db.execute(stmt).all()]
+
+    def list_customer_page(
+        self,
+        db: Session,
+        page: int = 1,
+        page_size: int = 20,
+        kf_id: int | None = None,
+        keyword: str | None = None,
+        reply_status: str | None = None,
+        is_favorite: bool | None = None,
+        owner_id: int | None = None,
+    ) -> dict[str, Any]:
+        stmt = self._customer_list_stmt(kf_id, keyword, reply_status, is_favorite, owner_id)
+        count_stmt = select(func.count()).select_from(stmt.order_by(None).subquery())
+        total = int(db.scalar(count_stmt) or 0)
+        rows = db.execute(stmt.offset((page - 1) * page_size).limit(page_size)).all()
+        return {
+            "items": [self.serialize_customer(db, customer, session, agent) for customer, session, agent in rows],
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+            "has_more": page * page_size < total,
+        }
+
+    def _customer_list_stmt(
+        self,
+        kf_id: int | None,
+        keyword: str | None,
+        reply_status: str | None,
+        is_favorite: bool | None,
+        owner_id: int | None,
+    ) -> Any:
         stmt = (
             select(Customer, TelegramSession, SupportAgent)
             .join(TelegramSession, Customer.assigned_session_id == TelegramSession.id, isouter=True)
@@ -58,7 +92,7 @@ class CustomerService:
                 )
             )
         stmt = stmt.order_by(Customer.last_message_at.is_(None), Customer.last_message_at.desc(), Customer.updated_at.desc())
-        return [self.serialize_customer(db, customer, session, agent) for customer, session, agent in db.execute(stmt).all()]
+        return stmt
 
     def get_customer(self, db: Session, customer_id: int, owner_id: int | None = None) -> Customer:
         customer = db.get(Customer, customer_id)
@@ -73,16 +107,27 @@ class CustomerService:
         db.refresh(customer)
         return customer
 
-    async def list_messages(self, db: Session, customer_id: int, limit: int = 100, owner_id: int | None = None) -> list[Message]:
+    async def list_messages_page(
+        self,
+        db: Session,
+        customer_id: int,
+        page_size: int = 20,
+        before_id: int | None = None,
+        owner_id: int | None = None,
+    ) -> dict[str, Any]:
         customer = self.get_customer(db, customer_id, owner_id)
         chat_key = self._chat_key(customer)
         stmt = (
             select(Message)
             .where(Message.session_id == customer.assigned_session_id, Message.chat_id == chat_key)
-            .order_by(Message.created_at.asc())
-            .limit(limit)
+            .order_by(Message.created_at.desc(), Message.id.desc())
+            .limit(page_size + 1)
         )
-        messages = list(db.scalars(stmt).all())
+        if before_id is not None:
+            stmt = stmt.where(Message.id < before_id)
+        fetched = list(db.scalars(stmt).all())
+        has_more = len(fetched) > page_size
+        messages = list(reversed(fetched[:page_size]))
         has_unread = any(item.direction == "inbound" and item.read_status == "unread" for item in messages)
         db.execute(
             update(Message)
@@ -99,7 +144,14 @@ class CustomerService:
             session = db.get(TelegramSession, customer.assigned_session_id) if customer.assigned_session_id else None
             if session and session.status == SessionStatus.connected:
                 await self._acknowledge_customer_read(session, customer, proxy_service.get_proxy_url_for_session(db, session))
-        return messages
+        return {
+            "items": [self.serialize_message(item) for item in messages],
+            "has_more": has_more,
+            # Keep one row of overlap between cursor pages. The newest page is
+            # periodically refreshed, so this prevents a message at the moving
+            # page boundary from disappearing when a new message arrives.
+            "next_before_id": messages[0].id + 1 if has_more and messages else None,
+        }
 
     async def reply(self, db: Session, customer_id: int, text: str | None = None, material_id: int | None = None, owner_id: int | None = None) -> Customer:
         text = (text or "").strip()

@@ -494,13 +494,17 @@ export default function Tasks() {
             <Form.Item
               name="material_group_id"
               label="选择素材分组"
-              extra="每个客户只随机发送分组内一条素材；优先级越高越可能先被抽取，一轮内所有素材发送成功后再重新随机。"
+              extra="支持文字、图片、名片或混合分组。每个客户只随机发送一条素材；优先级越高越可能先被抽取，一轮内所有素材发送成功后再重新随机。"
               rules={[{ required: true, message: '请选择素材分组' }]}
             >
               <Select
                 showSearch
                 optionFilterProp="label"
-                options={materialGroups.map((group) => ({ value: group.id, label: `${group.name}（${group.material_count}条素材）`, disabled: !group.material_count }))}
+                options={materialGroups.map((group) => ({
+                  value: group.id,
+                  label: `${group.name}（文字${group.text_count || 0} / 图片${group.image_count || 0} / 名片${group.contact_count || 0}）`,
+                  disabled: !group.material_count,
+                }))}
               />
             </Form.Item>
           ) : sendType === 'concat' ? (

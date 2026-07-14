@@ -32,6 +32,7 @@ import {
   getMaterialGroups,
   getMaterials,
   importTextMaterials,
+  importImageMaterials,
   updateMaterial,
   updateMaterialGroup,
 } from '../api/index.js';
@@ -96,9 +97,11 @@ export default function Materials() {
   const [moveOpen, setMoveOpen] = useState(false);
   const [moveGroupId, setMoveGroupId] = useState(null);
   const [importOpen, setImportOpen] = useState(false);
+  const [imageImportOpen, setImageImportOpen] = useState(false);
   const [form] = Form.useForm();
   const [groupForm] = Form.useForm();
   const [importForm] = Form.useForm();
+  const [imageImportForm] = Form.useForm();
   const materialType = Form.useWatch('material_type', form);
 
   const { data: materials = [], isLoading } = useQuery({ queryKey: ['materials'], queryFn: () => getMaterials() });
@@ -221,6 +224,27 @@ export default function Materials() {
     onError: (error) => message.error(error?.response?.data?.detail || error.message || '导入失败'),
   });
 
+  const imageImportMutation = useMutation({
+    mutationFn: (values) => {
+      const formData = new FormData();
+      values.files.forEach((item) => {
+        const file = item.originFileObj;
+        formData.append('files', file, file.webkitRelativePath || file.name);
+      });
+      if (values.group_id !== undefined && values.group_id !== null) formData.append('group_id', values.group_id);
+      return importImageMaterials(formData);
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['materials'] });
+      queryClient.invalidateQueries({ queryKey: ['material-groups'] });
+      setImageImportOpen(false);
+      imageImportForm.resetFields();
+      const text = `导入完成：已创建 ${data.created} 条图片素材${data.skipped ? `，跳过 ${data.skipped} 个无效文件` : ''}`;
+      if (data.skipped) message.warning(text, 8); else message.success(text);
+    },
+    onError: (error) => message.error(error?.response?.data?.detail || error.message || '批量导入图片失败'),
+  });
+
   const columns = [
     { title: '编号', dataIndex: 'id', width: 90 },
     { title: '名称', dataIndex: 'name', width: 180 },
@@ -276,6 +300,9 @@ export default function Materials() {
           </Button>
           <Button icon={<ImportOutlined />} onClick={() => { importForm.resetFields(); setImportOpen(true); }}>
             导入TXT创建文字素材
+          </Button>
+          <Button icon={<ImportOutlined />} onClick={() => { imageImportForm.resetFields(); setImageImportOpen(true); }}>
+            批量导入创建图片素材
           </Button>
           <Button onClick={() => setGroupsOpen(true)}>分组管理</Button>
           <Button disabled={!selectedRowKeys.length} onClick={() => { setMoveGroupId(null); setMoveOpen(true); }}>批量转移分组</Button>
@@ -358,6 +385,40 @@ export default function Materials() {
           </Form.Item>
           <Form.Item name="remark" label="备注">
             <Input.TextArea rows={3} maxLength={500} />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        title="批量导入创建图片素材"
+        open={imageImportOpen}
+        onCancel={() => setImageImportOpen(false)}
+        onOk={() => imageImportForm.submit()}
+        confirmLoading={imageImportMutation.isPending}
+        destroyOnClose
+        width={620}
+      >
+        <Form form={imageImportForm} layout="vertical" onFinish={(values) => imageImportMutation.mutate(values)}>
+          <Form.Item
+            name="files"
+            label="选择图片文件夹"
+            valuePropName="fileList"
+            getValueFromEvent={normFile}
+            extra="选择一个文件夹后，将识别其中所有图片；每张有效图片创建为一条图片素材。单次最多200张，每张不超过20MB。"
+            rules={[{ required: true, message: '请选择包含图片的文件夹' }]}
+          >
+            <Upload directory multiple accept="image/*" beforeUpload={() => false} listType="picture" maxCount={200}>
+              <Button icon={<ImportOutlined />}>选择图片文件夹</Button>
+            </Upload>
+          </Form.Item>
+          <Form.Item name="group_id" label="所属分组">
+            <Select
+              allowClear
+              placeholder="可不选择，导入后归入未分组"
+              options={materialGroups.map((group) => ({ value: group.id, label: group.name }))}
+              optionRender={renderGroupOption}
+              labelRender={renderGroupOption}
+            />
           </Form.Item>
         </Form>
       </Modal>
