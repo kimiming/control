@@ -306,7 +306,7 @@ export default function Messages() {
             height={customerListHeight}
             width="100%"
             itemCount={customers.length}
-            itemSize={126}
+            itemSize={154}
             itemData={customers}
             onItemsRendered={({ visibleStopIndex }) => {
               if (visibleStopIndex >= customers.length - 3 && customerQuery.hasNextPage && !customerQuery.isFetchingNextPage) {
@@ -317,7 +317,7 @@ export default function Messages() {
             {({ index, style, data }) => {
               const item = data[index];
               return (
-            <div style={{ ...style, paddingBottom: 8 }}>
+            <div className="customer-virtual-row" style={style}>
             <List.Item
               className={selectedCustomer?.id === item.id ? 'customer-list-item active' : 'customer-list-item'}
               onClick={() => setSelected(item)}
