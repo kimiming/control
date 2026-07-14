@@ -249,13 +249,12 @@ export default function Sessions() {
   });
 
   const batchBidirectionalMutation = useMutation({
-    mutationFn: checkAllSessionsBidirectional,
+    mutationFn: () => checkAllSessionsBidirectional(selectedRowKeys),
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['sessions'] });
-      message.success(
-        `批量检测完成：共 ${data.checked} 个，正常 ${data.normal} 个，疑似双向号 ${data.restricted} 个，超时 ${data.timeout} 个，未授权 ${data.unauthorized} 个，异常 ${data.error} 个`,
-        8,
-      );
+      setSelectedRowKeys([]);
+      const text = `批量检测完成：选中 ${data.requested} 个，找到 ${data.found} 个，已检测 ${data.checked} 个，跳过 ${data.skipped} 个；正常 ${data.normal} 个，疑似双向号 ${data.restricted} 个，超时 ${data.timeout} 个，未授权 ${data.unauthorized} 个，异常 ${data.error} 个`;
+      if (data.skipped || data.error) message.warning(text, 10); else message.success(text, 8);
     },
     onError: (error) => message.error(error?.response?.data?.detail || error.message || '批量双向号检测失败'),
   });
@@ -469,7 +468,7 @@ export default function Sessions() {
           <Button
             icon={<SafetyCertificateOutlined />}
             loading={batchBidirectionalMutation.isPending}
-            disabled={bidirectionalMutation.isPending || healthMutation.isPending}
+            disabled={!selectedRowKeys.length || bidirectionalMutation.isPending || healthMutation.isPending}
             onClick={() => batchBidirectionalMutation.mutate()}
           >
             批量双向号检测

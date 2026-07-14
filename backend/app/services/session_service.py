@@ -454,24 +454,35 @@ class SessionService:
         await self.publish_status(session, "bidirectional_checked")
         return session
 
-    async def check_all_bidirectional_statuses(self, db: Session, owner_id: int | None = None) -> dict[str, int]:
-        stmt = select(TelegramSession.id).order_by(TelegramSession.created_at.asc(), TelegramSession.id.asc())
-        if owner_id is not None:
-            stmt = stmt.where(TelegramSession.owner_id == owner_id)
-        session_ids = list(db.scalars(stmt).all())
+    async def check_bidirectional_statuses(
+        self,
+        db: Session,
+        session_ids: list[int],
+        owner_id: int | None = None,
+    ) -> dict[str, int]:
+        unique_ids = list(dict.fromkeys(session_ids))
+        sessions = self.get_sessions_by_ids(db, unique_ids, owner_id)
+        found_ids = {session.id for session in sessions}
         summary = {
+            "requested": len(unique_ids),
+            "found": len(sessions),
             "checked": 0,
+            "skipped": len(unique_ids) - len(found_ids),
             "normal": 0,
             "restricted": 0,
             "timeout": 0,
             "unauthorized": 0,
             "error": 0,
         }
-        for session_id in session_ids:
-            session = await self.check_bidirectional_status(db, session_id, owner_id)
-            summary["checked"] += 1
-            status = session.bidirectional_status or "error"
-            summary[status if status in summary else "error"] += 1
+        for session in sessions:
+            try:
+                result = await self.check_bidirectional_status(db, session.id, owner_id)
+                summary["checked"] += 1
+                status = result.bidirectional_status or "error"
+                summary[status if status in summary else "error"] += 1
+            except ValueError:
+                db.rollback()
+                summary["skipped"] += 1
         return summary
 
     @asynccontextmanager

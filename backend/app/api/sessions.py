@@ -119,8 +119,8 @@ async def health_check(db: Session = Depends(get_db), user: User = Depends(get_c
 
 
 @router.post("/bidirectional-check")
-async def batch_bidirectional_check(db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, int]:
-    return await session_service.check_all_bidirectional_statuses(db, user.id)
+async def batch_bidirectional_check(payload: SessionIds, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, int]:
+    return await session_service.check_bidirectional_statuses(db, payload.session_ids, user.id)
 
 
 @router.post("/contacts/scan")

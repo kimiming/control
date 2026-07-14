@@ -86,6 +86,10 @@ class ProxyService:
         if require_active:
             stmt = stmt.where(ProxyConfig.is_active.is_(True))
         proxies = db.scalars(stmt).all()
+        session_key = str(session.id)
+        for proxy in proxies:
+            if session_key in self._deserialize_ids(proxy.session_ids):
+                return proxy
         for proxy in proxies:
             if group_key in self._deserialize_group_ids(proxy.group_ids):
                 return proxy
@@ -96,24 +100,24 @@ class ProxyService:
         if owner_id is not None:
             stmt = stmt.where(TelegramSession.owner_id == owner_id)
         sessions = db.scalars(stmt).all()
-        group_ids = list(dict.fromkeys(str(session.group_id or 0) for session in sessions))
+        selected_ids = {str(session.id) for session in sessions}
         proxy_stmt = select(ProxyConfig)
         if owner_id is not None:
             proxy_stmt = proxy_stmt.where(ProxyConfig.owner_id == owner_id)
         proxies = list(db.scalars(proxy_stmt).all())
         for proxy in proxies:
-            current = [item for item in self._deserialize_group_ids(proxy.group_ids) if item not in group_ids]
-            proxy.group_ids = ",".join(current) if current else None
+            current = [item for item in self._deserialize_ids(proxy.session_ids) if item not in selected_ids]
+            proxy.session_ids = ",".join(current) if current else None
 
         if proxy_id and proxy_id != 0:
             proxy = db.get(ProxyConfig, proxy_id)
             if not proxy or (owner_id is not None and proxy.owner_id != owner_id):
                 raise ValueError("Proxy not found")
-            current = self._deserialize_group_ids(proxy.group_ids)
-            proxy.group_ids = ",".join(list(dict.fromkeys([*current, *group_ids])))
+            current = self._deserialize_ids(proxy.session_ids)
+            proxy.session_ids = ",".join(list(dict.fromkeys([*current, *selected_ids])))
 
         db.commit()
-        return len(group_ids)
+        return len(sessions)
 
     def _proxy_url(self, proxy: ProxyConfig | None) -> str | None:
         if not proxy:

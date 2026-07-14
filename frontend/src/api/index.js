@@ -57,7 +57,7 @@ export const disconnectSessions = (sessionIds) => api.post('/sessions/disconnect
 export const connectSessions = (sessionIds) => api.post('/sessions/connect', { session_ids: sessionIds }, { timeout: 0 }).then((res) => res.data);
 export const runHealthCheck = () => api.post('/sessions/health-check').then((res) => res.data);
 export const checkSessionBidirectional = (id) => api.post(`/sessions/${id}/bidirectional-check`, null, { timeout: 60000 }).then((res) => res.data);
-export const checkAllSessionsBidirectional = () => api.post('/sessions/bidirectional-check', null, { timeout: 0 }).then((res) => res.data);
+export const checkAllSessionsBidirectional = (sessionIds) => api.post('/sessions/bidirectional-check', { session_ids: sessionIds }, { timeout: 0 }).then((res) => res.data);
 export const scanSessionContacts = (id) => api.post(`/sessions/${id}/contacts/scan`, null, { timeout: 0 }).then((res) => res.data);
 export const clearSessionContacts = (id) => api.post(`/sessions/${id}/contacts/clear`, null, { timeout: 0 }).then((res) => res.data);
 export const importSessionContacts = (id, file, importLimit) => {

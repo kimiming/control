@@ -1,6 +1,7 @@
 import asyncio
 import json
 import random
+import re
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -679,7 +680,7 @@ class TaskService:
                     db.execute(update(MarketingTask).where(MarketingTask.id == task.id).values(sent_count=MarketingTask.sent_count + 1))
                     db.commit()
                 except Exception as exc:
-                    error = str(exc)
+                    error = self._translate_send_error(exc)
                     item.status = "failed"
                     item.error_message = error[:2000]
                     item.finished_at = datetime.utcnow()
@@ -697,14 +698,15 @@ class TaskService:
             await self._finish_background_task(db, task)
         except Exception as exc:
             if 'task' in locals() and task:
+                error = self._translate_send_error(exc)
                 for item in db.scalars(select(TaskTarget).where(
                     TaskTarget.task_id == task_id,
                     TaskTarget.session_id == session_id,
                     TaskTarget.status.in_(["queued", "processing"]),
                 )).all():
                     item.status = "unassigned"
-                    item.error_message = str(exc)[:2000]
-                task.error_message = str(exc)[:2000]
+                    item.error_message = error[:2000]
+                task.error_message = error[:2000]
                 db.commit()
                 await self._finish_background_task(db, task)
         finally:
@@ -913,7 +915,7 @@ class TaskService:
                     )
                     sent = True
                 except Exception as exc:
-                    last_error = str(exc)
+                    last_error = self._translate_send_error(exc)
                     if self._is_session_restricted_error(exc):
                         self._mark_session_restricted(db, session, last_error)
                         self._log_session_task(
@@ -1373,6 +1375,61 @@ class TaskService:
             "PEER_FLOOD",
         )
         return any(marker in message for marker in restricted_markers)
+
+    def _translate_send_error(self, exc: Exception | str) -> str:
+        raw = str(exc).strip()
+        upper = raw.upper()
+        translations = [
+            (("ALLOW_PAYMENT_REQUIRED",), "目标客户开启了付费消息，当前发送需要支付 Telegram Stars"),
+            (("FROZEN_METHOD_INVALID",), "Session账号已被冻结，Telegram禁止执行发送操作"),
+            (("AUTH_KEY_DUPLICATED",), "Session授权在不同IP同时使用，授权密钥已失效"),
+            (("AUTH_KEY_UNREGISTERED", "SESSION_REVOKED", "SESSION_EXPIRED"), "Session登录授权已失效，需要重新登录"),
+            (("USER_PRIVACY_RESTRICTED",), "目标客户的隐私设置不允许当前账号发送消息"),
+            (("USER_NOT_MUTUAL_CONTACT",), "目标客户仅允许互为联系人后发送消息"),
+            (("CONTACT_REQUIRE_PREMIUM", "PREMIUM_ACCOUNT_REQUIRED"), "目标客户要求发送方使用 Telegram Premium账号"),
+            (("PEER_FLOOD",), "Session触发Telegram垃圾消息风控，暂时禁止继续私聊陌生用户"),
+            (("USER_BANNED_IN_CHANNEL",), "Session已被目标群组或频道封禁"),
+            (("CHAT_WRITE_FORBIDDEN",), "当前Session没有向该会话发送消息的权限"),
+            (("CHAT_SEND_MEDIA_FORBIDDEN", "CHAT_SEND_PHOTOS_FORBIDDEN"), "当前会话禁止发送图片或媒体"),
+            (("INPUT_USER_DEACTIVATED", "USER_DEACTIVATED", "USER_DEACTIVATED_BAN"), "目标Telegram账号已注销或被封禁"),
+            (("USERNAME_NOT_OCCUPIED",), "目标用户名不存在或已被注销"),
+            (("USERNAME_INVALID",), "目标用户名格式无效"),
+            (("PHONE_NUMBER_INVALID",), "目标手机号格式无效"),
+            (("PEER_ID_INVALID", "USER_ID_INVALID", "INPUT_USER_INVALID"), "目标客户无效，当前Session无法解析该用户"),
+            (("MESSAGE_TOO_LONG",), "发送文字超过Telegram允许的最大长度"),
+            (("MEDIA_EMPTY", "MEDIA_INVALID", "PHOTO_INVALID", "IMAGE_PROCESS_FAILED"), "图片或媒体文件无效，Telegram无法处理"),
+            (("FILE_REFERENCE_EXPIRED",), "媒体文件引用已过期，需要重新上传"),
+            (("SLOWMODE_WAIT",), "目标会话开启慢速模式，需要稍后再发送"),
+            (("BOT_METHOD_INVALID",), "当前操作不支持机器人账号"),
+            (("YOU_BLOCKED_USER",), "当前Session已屏蔽目标客户"),
+            (("USER_IS_BLOCKED",), "目标客户已屏蔽当前Session"),
+            (("DATABASE IS LOCKED",), "Session文件正在被其他连接占用"),
+            (("SESSION IS NOT AUTHORIZED", "NOT AUTHORIZED"), "Session未登录或授权已失效"),
+            (("IS NOT AVAILABLE TO THIS SESSION",), "当前Session无法找到该目标客户的Telegram账号"),
+            (("无法解析用户名",), "无法解析目标用户名，用户可能不存在或已更名"),
+            (("TIMED OUT", "TIMEOUT", "TIMEOUTERROR"), "连接Telegram超时，请检查代理或网络稳定性"),
+            (("SERVER CLOSED THE CONNECTION", "CONNECTION ERROR", "NETWORK ERROR"), "Telegram网络连接异常，请检查代理或网络"),
+            (("RPC_CALL_FAIL", "INTERNAL_SERVER_ERROR", "SERVER_ERROR"), "Telegram服务器暂时异常，请稍后重试"),
+        ]
+        for tokens, text in translations:
+            matched = next((token for token in tokens if token.upper() in upper), None)
+            if matched:
+                detail = text
+                if matched == "SLOWMODE_WAIT":
+                    seconds = re.search(r"SLOWMODE_WAIT[_\s-]?(\d+)", upper)
+                    if seconds:
+                        detail += f"（需等待约 {seconds.group(1)} 秒）"
+                code = matched if matched.isascii() and " " not in matched else None
+                return f"{detail}{f'（错误码：{code}）' if code else ''}"
+
+        flood = re.search(r"FLOOD_WAIT[_\s-]?(\d+)?", upper)
+        if flood or "A WAIT OF" in upper:
+            seconds = flood.group(1) if flood else None
+            detail = "Telegram发送频率过高，需要等待后再发送"
+            if seconds:
+                detail += f"（约 {seconds} 秒）"
+            return f"{detail}（错误码：FLOOD_WAIT）"
+        return f"Telegram发送失败：{raw[:500] or '未知错误'}"
 
     def _is_invalid_peer_error(self, exc: Exception) -> bool:
         message = str(exc).upper()
