@@ -175,6 +175,7 @@ export default function Tasks() {
     groups.forEach((group) => map.set(group.id, group.name));
     return map;
   }, [groups]);
+  const sessionGroupMap = useMemo(() => new Map(groups.map((group) => [group.id, group])), [groups]);
   const materialGroupNameMap = useMemo(() => new Map(materialGroups.map((group) => [group.id, group.name])), [materialGroups]);
 
   const runningTaskIds = useMemo(
@@ -331,15 +332,14 @@ export default function Tasks() {
       },
     },
     {
-      title: '文字内容',
-      dataIndex: 'content',
-      ellipsis: true,
-    },
-    {
       title: 'Session分类',
       dataIndex: 'session_group_id',
       width: 140,
-      render: (value) => (value ? groupNameMap.get(value) || value : '全部已连接'),
+      render: (value) => {
+        if (!value) return <Tag>全部已连接</Tag>;
+        const group = sessionGroupMap.get(value);
+        return <Tag color={group?.color || 'blue'}>{group?.name || '分组已删除'}</Tag>;
+      },
     },
     {
       title: '目标类型',
@@ -440,7 +440,7 @@ export default function Tasks() {
         </div>
       </div>
 
-      <Table rowKey="id" columns={columns} dataSource={tasks} loading={isLoading} scroll={{ x: 1450 }} />
+      <Table rowKey="id" columns={columns} dataSource={tasks} loading={isLoading} scroll={{ x: 1280 }} />
 
       <Modal
         title={editing ? '编辑任务' : '新增任务'}

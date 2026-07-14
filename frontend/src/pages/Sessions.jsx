@@ -1,5 +1,5 @@
 import { CheckCircleOutlined, ClearOutlined, DeleteOutlined, DisconnectOutlined, ImportOutlined, LinkOutlined, SafetyCertificateOutlined, SearchOutlined, TeamOutlined, UsergroupAddOutlined } from '@ant-design/icons';
-import { Button, Card, Drawer, Form, Input, InputNumber, Modal, Popconfirm, Radio, Select, Space, Table, Tag, Upload, message } from 'antd';
+import { Button, Card, Drawer, Form, Input, InputNumber, Modal, Popconfirm, Radio, Select, Space, Spin, Table, Tag, Upload, message } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import dayjs from 'dayjs';
 import { useEffect, useMemo, useState } from 'react';
@@ -61,6 +61,66 @@ const healthStatusOptions = [
   { label: '监听异常', value: 'listener_error' },
 ];
 
+const sessionLogActionText = {
+  create: '创建Session',
+  update: '更新Session',
+  connect: '连接Session',
+  connect_skipped: '跳过连接',
+  connect_failed: '连接失败',
+  batch_connect_skipped: '批量连接跳过',
+  disconnect: '断开Session',
+  batch_disconnect: '批量断开Session',
+  move_group: '移动Session分组',
+  move_support_agent: '移动所属客服',
+  move_proxy: '移动所属代理',
+  health_check: '健康检查',
+  bidirectional_check: '双向号检测',
+  contacts_scan: '识别通讯录',
+  contacts_clear: '清空通讯录',
+  contacts_import: '导入通讯录',
+  import_session_file: '导入Session文件',
+};
+
+const sessionLogStatusText = {
+  connected: '已连接',
+  connecting: '连接中',
+  disconnected: '未连接',
+  healthy: '健康',
+  unhealthy: '异常',
+  unknown: '未知',
+  unchecked: '未检查',
+  unauthorized: '未授权',
+  restricted: '疑似双向号',
+  normal: '正常（非双向号）',
+  timeout: '检测超时',
+  error: '检测异常',
+};
+
+function translateSessionLogMessage(value) {
+  if (!value) return '-';
+  const exactText = {
+    'Session created': 'Session已创建',
+    'Session updated': 'Session已更新',
+    'Session connected': 'Session已连接',
+    'Session disconnected': 'Session已断开',
+    'Session disconnected by batch operation': '已通过批量操作断开Session',
+    'Session is busy sending a task': 'Session正在执行发送任务，已跳过连接',
+  }[value];
+  if (exactText) return exactText;
+
+  let match = value.match(/^Session is already (.+)$/);
+  if (match) return `Session当前已是${sessionLogStatusText[match[1]] || match[1]}状态`;
+  match = value.match(/^Moved to group (.+)$/);
+  if (match) return match[1] === 'none' ? '已移动到未分组' : `已移动到分组 ID：${match[1]}`;
+  match = value.match(/^Moved to support agent (.+)$/);
+  if (match) return match[1] === 'none' ? '已取消绑定客服' : `已移动到客服 ID：${match[1]}`;
+  match = value.match(/^Imported (.+)$/);
+  if (match) return `已导入文件：${match[1]}`;
+  match = value.match(/^(normal|restricted|timeout|unauthorized|error):\s*(.*)$/s);
+  if (match) return `${sessionLogStatusText[match[1]]}：${match[2] || '-'}`;
+  return sessionLogStatusText[value] || value;
+}
+
 export default function Sessions() {
   const queryClient = useQueryClient();
   const [modalOpen, setModalOpen] = useState(false);
@@ -76,6 +136,7 @@ export default function Sessions() {
   const [contactImportTarget, setContactImportTarget] = useState(null);
   const [contactFileList, setContactFileList] = useState([]);
   const [contactImportLimit, setContactImportLimit] = useState(10);
+  const [batchImporting, setBatchImporting] = useState(false);
   const [groupForm] = Form.useForm();
 
   const { data: sessions = [], isLoading } = useQuery({
@@ -317,16 +378,34 @@ export default function Sessions() {
     multiple: true,
     showUploadList: false,
     beforeUpload: async (file) => {
+      setBatchImporting(true);
       try {
         const result = await importSessions(file);
         message.success(`${file.name} 导入成功 ${result.created} 条，跳过 ${result.skipped} 条`);
         queryClient.invalidateQueries({ queryKey: ['sessions'] });
       } catch (error) {
         message.error(`${file.name} 导入失败：${error?.response?.data?.detail || error.message}`);
+      } finally {
+        setBatchImporting(false);
       }
       return false;
     },
   }), [queryClient]);
+
+  const batchLoadingTip = batchImporting ? '正在批量导入Session…'
+    : batchDeleteMutation.isPending ? '正在批量删除Session…'
+      : batchConnectMutation.isPending ? '正在批量连接Session…'
+        : batchDisconnectMutation.isPending ? '正在批量断开Session…'
+          : healthMutation.isPending ? '正在执行健康检查…'
+            : batchBidirectionalMutation.isPending ? '正在批量检测双向号…'
+              : batchContactMutation.isPending
+                ? (batchContactMutation.variables === 'clear' ? '正在批量清空通讯录…' : '正在批量识别通讯录…')
+                : (contactImportTarget?.mode === 'batch' && contactImportMutation.isPending) ? '正在批量导入通讯录…'
+                  : moveMutation.isPending ? '正在批量移动Session分组…'
+                    : moveAgentMutation.isPending ? '正在批量移动客服…'
+                      : moveProxyMutation.isPending ? '正在批量移动代理…'
+                        : '';
+  const batchOperationPending = Boolean(batchLoadingTip);
 
   const renderSupportAgentOption = (option) => {
     if (option.value === 0) return <Tag>未绑定</Tag>;
@@ -358,6 +437,7 @@ export default function Sessions() {
 
   return (
     <div className="page">
+      <Spin fullscreen spinning={batchOperationPending} tip={batchLoadingTip} size="large" />
       <Card size="small" className="filter-card" title="搜索筛选">
         <Space wrap>
           <Input.Search
@@ -643,8 +723,12 @@ export default function Sessions() {
         <Space direction="vertical" style={{ width: '100%' }}>
           {logs.map((log) => (
             <div key={log.id}>
-              <strong>{log.action}</strong> #{log.session_id || '-'} {log.message}
-              <div style={{ color: '#667085' }}>{log.created_at}</div>
+              <strong>{sessionLogActionText[log.action] || 'Session操作'}</strong>{' '}
+              <span>Session ID：{log.session_id || '-'}</span>{' '}
+              <span>{translateSessionLogMessage(log.message)}</span>
+              <div style={{ color: '#667085' }}>
+                {log.created_at ? dayjs(log.created_at).format('YYYY-MM-DD HH:mm:ss') : '-'}
+              </div>
             </div>
           ))}
         </Space>
