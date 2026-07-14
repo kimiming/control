@@ -1,5 +1,5 @@
-import { CheckCircleOutlined, DeleteOutlined, DisconnectOutlined, ImportOutlined, LinkOutlined, SafetyCertificateOutlined, TeamOutlined } from '@ant-design/icons';
-import { Button, Card, Drawer, Form, Input, Modal, Popconfirm, Radio, Select, Space, Table, Tag, Upload, message } from 'antd';
+import { CheckCircleOutlined, ClearOutlined, DeleteOutlined, DisconnectOutlined, ImportOutlined, LinkOutlined, SafetyCertificateOutlined, SearchOutlined, TeamOutlined, UsergroupAddOutlined } from '@ant-design/icons';
+import { Button, Card, Drawer, Form, Input, InputNumber, Modal, Popconfirm, Radio, Select, Space, Table, Tag, Upload, message } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import dayjs from 'dayjs';
 import { useEffect, useMemo, useState } from 'react';
@@ -23,6 +23,12 @@ import {
   runHealthCheck,
   checkSessionBidirectional,
   checkAllSessionsBidirectional,
+  scanSessionContacts,
+  clearSessionContacts,
+  importSessionContacts,
+  scanBatchSessionContacts,
+  clearBatchSessionContacts,
+  importBatchSessionContacts,
   updateSession,
 } from '../api/index.js';
 import SessionList from '../components/Sessions/SessionList.jsx';
@@ -67,6 +73,9 @@ export default function Sessions() {
   const [filters, setFilters] = useState({});
   const [logsOpen, setLogsOpen] = useState(false);
   const [taskLogSession, setTaskLogSession] = useState(null);
+  const [contactImportTarget, setContactImportTarget] = useState(null);
+  const [contactFileList, setContactFileList] = useState([]);
+  const [contactImportLimit, setContactImportLimit] = useState(10);
   const [groupForm] = Form.useForm();
 
   const { data: sessions = [], isLoading } = useQuery({
@@ -251,6 +260,59 @@ export default function Sessions() {
     onError: (error) => message.error(error?.response?.data?.detail || error.message || '批量双向号检测失败'),
   });
 
+  const contactMutation = useMutation({
+    mutationFn: ({ record, action }) => action === 'scan' ? scanSessionContacts(record.id) : clearSessionContacts(record.id),
+    onSuccess: (data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['sessions'] });
+      message.success(variables.action === 'scan' ? `识别完成：通讯录好友 ${data.contact_count} 个` : '通讯录已清空');
+    },
+    onError: (error) => message.error(error?.response?.data?.detail || error.message || '通讯录操作失败'),
+  });
+
+  const batchContactMutation = useMutation({
+    mutationFn: (action) => action === 'scan' ? scanBatchSessionContacts(selectedRowKeys) : clearBatchSessionContacts(selectedRowKeys),
+    onSuccess: (data, action) => {
+      queryClient.invalidateQueries({ queryKey: ['sessions'] });
+      const text = `${action === 'scan' ? '批量识别' : '批量清空'}完成：成功 ${data.success} 个，失败 ${data.failed} 个`;
+      if (data.failed) message.warning(text, 8); else message.success(text);
+    },
+    onError: (error) => message.error(error?.response?.data?.detail || error.message || '批量通讯录操作失败'),
+  });
+
+  const contactImportMutation = useMutation({
+    mutationFn: () => {
+      const file = contactFileList[0]?.originFileObj;
+      if (!file) throw new Error('请选择TXT文件');
+      return contactImportTarget?.mode === 'batch'
+        ? importBatchSessionContacts(contactImportTarget.sessionIds, file, contactImportLimit)
+        : importSessionContacts(contactImportTarget.session.id, file, contactImportLimit);
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['sessions'] });
+      if (data.remaining_count > 0) {
+        const blob = new Blob([`${data.remaining_phones.join('\n')}\n`], { type: 'text/plain;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `通讯录剩余号码_${data.remaining_count}.txt`;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+      }
+      if (contactImportTarget?.mode === 'batch') {
+        const text = `批量导入完成：分配 ${data.allocated_count} 个号码，剩余 ${data.remaining_count} 个，成功 ${data.success} 个Session，失败 ${data.failed} 个`;
+        if (data.failed) message.warning(text, 8); else message.success(text);
+      } else {
+        const text = `导入完成：分配 ${data.allocated_count} 个号码，剩余 ${data.remaining_count} 个`;
+        if (data.failed) message.warning(`${text}，导入失败`, 8); else message.success(text);
+      }
+      setContactImportTarget(null);
+      setContactFileList([]);
+    },
+    onError: (error) => message.error(error?.response?.data?.detail || error.message || '导入通讯录失败'),
+  });
+
   const uploadProps = useMemo(() => ({
     accept: '.session,.csv,.xlsx,.xls,.txt',
     multiple: true,
@@ -412,6 +474,36 @@ export default function Sessions() {
           >
             批量双向号检测
           </Button>
+          <Button
+            icon={<SearchOutlined />}
+            disabled={!selectedRowKeys.length || batchContactMutation.isPending}
+            loading={batchContactMutation.isPending && batchContactMutation.variables === 'scan'}
+            onClick={() => batchContactMutation.mutate('scan')}
+          >
+            批量识别通讯录
+          </Button>
+          <Popconfirm
+            title={`确认清空选中 ${selectedRowKeys.length} 个Session的全部通讯录？`}
+            description="该操作会删除Telegram账号内的所有通讯录联系人。"
+            disabled={!selectedRowKeys.length}
+            onConfirm={() => batchContactMutation.mutate('clear')}
+          >
+            <Button
+              danger
+              icon={<ClearOutlined />}
+              disabled={!selectedRowKeys.length || batchContactMutation.isPending}
+              loading={batchContactMutation.isPending && batchContactMutation.variables === 'clear'}
+            >
+              批量清空通讯录
+            </Button>
+          </Popconfirm>
+          <Button
+            icon={<UsergroupAddOutlined />}
+            disabled={!selectedRowKeys.length}
+            onClick={() => { setContactFileList([]); setContactImportLimit(10); setContactImportTarget({ mode: 'batch', sessionIds: [...selectedRowKeys] }); }}
+          >
+            批量导入通讯录
+          </Button>
           <Button onClick={() => setLogsOpen(true)}>操作日志</Button>
         </div>
         <div className="session-action-row session-move-row">
@@ -475,6 +567,16 @@ export default function Sessions() {
         onDelete={(record) => deleteMutation.mutate(record)}
         onTaskLogs={(record) => setTaskLogSession(record)}
         onBidirectionalCheck={(record) => bidirectionalMutation.mutate(record)}
+        onContactScan={(record) => contactMutation.mutate({ record, action: 'scan' })}
+        onContactClear={(record) => Modal.confirm({
+          title: `确认清空 ${record.username} 的全部通讯录？`,
+          content: '该操作会删除Telegram账号内的所有通讯录联系人。',
+          okText: '确认清空',
+          okButtonProps: { danger: true },
+          onOk: () => contactMutation.mutateAsync({ record, action: 'clear' }),
+        })}
+        onContactImport={(record) => { setContactFileList([]); setContactImportLimit(10); setContactImportTarget({ mode: 'single', session: record }); }}
+        contactOperatingSessionId={contactMutation.isPending ? contactMutation.variables?.record?.id : null}
         checkingSessionId={batchBidirectionalMutation.isPending ? -1 : (bidirectionalMutation.isPending ? bidirectionalMutation.variables?.id : null)}
       />
       <SessionModal
@@ -485,6 +587,38 @@ export default function Sessions() {
         onCancel={() => { setModalOpen(false); setEditing(null); }}
         onSubmit={(values) => saveMutation.mutate(values)}
       />
+      <Modal
+        title={contactImportTarget?.mode === 'batch' ? `批量导入通讯录（${contactImportTarget.sessionIds.length}个Session）` : `导入通讯录 - ${contactImportTarget?.session?.username || ''}`}
+        open={Boolean(contactImportTarget)}
+        onCancel={() => { setContactImportTarget(null); setContactFileList([]); }}
+        onOk={() => contactImportMutation.mutate()}
+        confirmLoading={contactImportMutation.isPending}
+        okText="开始导入"
+      >
+        <Upload
+          accept=".txt,text/plain"
+          maxCount={1}
+          beforeUpload={() => false}
+          fileList={contactFileList}
+          onChange={({ fileList }) => setContactFileList(fileList.slice(-1))}
+        >
+          <Button icon={<ImportOutlined />}>选择手机号TXT文件</Button>
+        </Upload>
+        <div style={{ marginTop: 16 }}>
+          <div style={{ marginBottom: 6 }}>{contactImportTarget?.mode === 'batch' ? '每个Session导入数量' : '导入数量'}</div>
+          <InputNumber
+            min={1}
+            max={10000}
+            precision={0}
+            value={contactImportLimit}
+            onChange={(value) => setContactImportLimit(value || 1)}
+            style={{ width: '100%' }}
+          />
+        </div>
+        <div style={{ marginTop: 12, color: '#667085' }}>
+          TXT每行一个手机号；号码按Session顺序分配且不会重复。未分配的剩余号码会在操作结束后自动导出为TXT。
+        </div>
+      </Modal>
       <Modal title="新建分组" open={groupModalOpen} onCancel={() => setGroupModalOpen(false)} onOk={() => groupForm.submit()}>
         <Form form={groupForm} layout="vertical" onFinish={(values) => groupMutation.mutate(values)}>
           <Form.Item name="name" label="分组名称" rules={[{ required: true, message: '请输入分组名称' }]}>

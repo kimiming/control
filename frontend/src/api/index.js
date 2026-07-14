@@ -58,6 +58,23 @@ export const connectSessions = (sessionIds) => api.post('/sessions/connect', { s
 export const runHealthCheck = () => api.post('/sessions/health-check').then((res) => res.data);
 export const checkSessionBidirectional = (id) => api.post(`/sessions/${id}/bidirectional-check`, null, { timeout: 60000 }).then((res) => res.data);
 export const checkAllSessionsBidirectional = () => api.post('/sessions/bidirectional-check', null, { timeout: 0 }).then((res) => res.data);
+export const scanSessionContacts = (id) => api.post(`/sessions/${id}/contacts/scan`, null, { timeout: 0 }).then((res) => res.data);
+export const clearSessionContacts = (id) => api.post(`/sessions/${id}/contacts/clear`, null, { timeout: 0 }).then((res) => res.data);
+export const importSessionContacts = (id, file, importLimit) => {
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('import_limit', importLimit);
+  return api.post(`/sessions/${id}/contacts/import`, formData, { timeout: 0 }).then((res) => res.data);
+};
+export const scanBatchSessionContacts = (sessionIds) => api.post('/sessions/contacts/scan', { session_ids: sessionIds }, { timeout: 0 }).then((res) => res.data);
+export const clearBatchSessionContacts = (sessionIds) => api.post('/sessions/contacts/clear', { session_ids: sessionIds }, { timeout: 0 }).then((res) => res.data);
+export const importBatchSessionContacts = (sessionIds, file, perSessionLimit) => {
+  const formData = new FormData();
+  formData.append('session_ids', JSON.stringify(sessionIds));
+  formData.append('file', file);
+  formData.append('per_session_limit', perSessionLimit);
+  return api.post('/sessions/contacts/import', formData, { timeout: 0 }).then((res) => res.data);
+};
 export const getSessionLogs = (params) => api.get('/sessions/logs', { params }).then((res) => res.data);
 export const getSessionTaskLogs = (id, params) => api.get(`/sessions/${id}/task-logs`, { params }).then((res) => res.data);
 export const getMessages = (params) => api.get('/messages', { params }).then((res) => res.data);
@@ -66,7 +83,14 @@ export const getTask = (id) => api.get(`/tasks/${id}`).then((res) => res.data);
 export const createTask = (data) => api.post('/tasks', data).then((res) => res.data);
 export const updateTask = (id, data) => api.put(`/tasks/${id}`, data).then((res) => res.data);
 export const deleteTask = (id) => api.delete(`/tasks/${id}`).then((res) => res.data);
-export const executeTask = (id) => api.post(`/tasks/${id}/execute`, null, { timeout: 0 }).then((res) => res.data);
+export const executeTask = (id) => api.post(`/tasks/${id}/execute`).then((res) => res.data);
+export const pauseTask = (id) => api.post(`/tasks/${id}/pause`).then((res) => res.data);
+export const resumeTask = (id) => api.post(`/tasks/${id}/resume`).then((res) => res.data);
+export const cancelTask = (id) => api.post(`/tasks/${id}/cancel`).then((res) => res.data);
+export const retryTaskUnsent = (id) => api.post(`/tasks/${id}/retry-unsent`).then((res) => res.data);
+export const requeueTaskSession = (taskId, sessionId) => api.post(`/tasks/${taskId}/sessions/${sessionId}/requeue`).then((res) => res.data);
+export const getTaskActiveSessions = (id) => api.get(`/tasks/${id}/active-sessions`).then((res) => res.data);
+export const getTaskSessionJobs = (id) => api.get(`/tasks/${id}/session-jobs`).then((res) => res.data);
 export const getTaskLogs = (id, params) => api.get(`/tasks/${id}/logs`, { params }).then((res) => res.data);
 export const exportTaskRemainingTargets = (id) => api.get(`/tasks/${id}/remaining-targets`, { responseType: 'blob' }).then((res) => ({
   blob: res.data,

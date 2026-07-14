@@ -1,5 +1,5 @@
-import { DeleteOutlined, EditOutlined, FileTextOutlined, LinkOutlined, DisconnectOutlined, MoreOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
-import { Avatar, Button, Dropdown, Popconfirm, Space, Table, Tag, Tooltip, Typography } from 'antd';
+import { ClearOutlined, DeleteOutlined, EditOutlined, FileTextOutlined, LinkOutlined, DisconnectOutlined, ImportOutlined, MoreOutlined, SafetyCertificateOutlined, SearchOutlined } from '@ant-design/icons';
+import { Avatar, Button, Popconfirm, Popover, Space, Table, Tag, Tooltip, Typography } from 'antd';
 import dayjs from 'dayjs';
 
 const statusColor = {
@@ -73,6 +73,10 @@ export default function SessionList({
   onDelete,
   onTaskLogs,
   onBidirectionalCheck,
+  onContactScan,
+  onContactClear,
+  onContactImport,
+  contactOperatingSessionId,
   checkingSessionId,
 }) {
   const columns = [
@@ -157,6 +161,16 @@ export default function SessionList({
       render: (value) => value || 0,
     },
     {
+      title: '通讯录数量',
+      dataIndex: 'contact_count',
+      width: 130,
+      render: (value, record) => (
+        <Tooltip title={record.contacts_scanned_at ? `识别时间：${dayjs(record.contacts_scanned_at).format('YYYY-MM-DD HH:mm:ss')}` : '尚未识别通讯录'}>
+          {value == null ? <Tag color="red">未识别</Tag> : <Tag color="blue">{value}</Tag>}
+        </Tooltip>
+      ),
+    },
+    {
       title: '操作',
       key: 'actions',
       width: 260,
@@ -191,11 +205,27 @@ export default function SessionList({
               <Button danger icon={<DeleteOutlined />} />
             </Tooltip>
           </Popconfirm>
-          <Tooltip title="更多">
-            <Dropdown menu={{ items: [{ key: 'reserved', label: '扩展接口预留', disabled: true }] }}>
-              <Button icon={<MoreOutlined />} />
-            </Dropdown>
-          </Tooltip>
+          <Popover
+            trigger="click"
+            placement="bottomRight"
+            content={(
+              <Space>
+                <Tooltip title="识别通讯录好友">
+                  <Button icon={<SearchOutlined />} onClick={() => onContactScan(record)} />
+                </Tooltip>
+                <Tooltip title="清空所有通讯录">
+                  <Button danger icon={<ClearOutlined />} onClick={() => onContactClear(record)} />
+                </Tooltip>
+                <Tooltip title="导入通讯录TXT">
+                  <Button type="primary" icon={<ImportOutlined />} onClick={() => onContactImport(record)} />
+                </Tooltip>
+              </Space>
+            )}
+          >
+            <Tooltip title="更多通讯录操作">
+              <Button icon={<MoreOutlined />} loading={contactOperatingSessionId === record.id} />
+            </Tooltip>
+          </Popover>
         </Space>
       ),
     },
@@ -209,7 +239,7 @@ export default function SessionList({
       loading={loading}
       rowSelection={{ selectedRowKeys, onChange: onSelectionChange }}
       pagination={{ pageSize: 20, showSizeChanger: true }}
-      scroll={{ x: 1830 }}
+      scroll={{ x: 1960 }}
     />
   );
 }
