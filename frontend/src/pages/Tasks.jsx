@@ -24,7 +24,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import dayjs from 'dayjs';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
-import { cancelTask, createTask, deleteTask, executeTask, exportTaskRemainingTargets, getCustomerProfiles, getGroups, getMaterialGroups, getMaterials, getTaskActiveSessions, getTaskLogs, getTaskSessionJobs, getTasks, pauseTask, requeueTaskSession, resumeTask, retryTaskUnsent, updateTask } from '../api/index.js';
+import { cancelTask, createTask, deleteTask, executeTask, exportTaskRemainingTargets, getCustomerProfiles, getGroups, getMaterialGroups, getMaterials, getSupportAgents, getTaskActiveSessions, getTaskLogs, getTaskSessionJobs, getTasks, pauseTask, requeueTaskSession, resumeTask, retryTaskUnsent, updateTask } from '../api/index.js';
 
 const statusColor = {
   draft: 'default',
@@ -114,6 +114,7 @@ export default function Tasks() {
     },
   });
   const { data: groups = [] } = useQuery({ queryKey: ['session-groups'], queryFn: getGroups });
+  const { data: supportAgents = [] } = useQuery({ queryKey: ['support-agents', 'tasks'], queryFn: getSupportAgents });
   const { data: materialGroups = [] } = useQuery({ queryKey: ['material-groups'], queryFn: getMaterialGroups });
   const { data: textMaterials = [] } = useQuery({ queryKey: ['materials', 'text'], queryFn: () => getMaterials({ material_type: 'text' }) });
   const { data: imageMaterials = [] } = useQuery({ queryKey: ['materials', 'image'], queryFn: () => getMaterials({ material_type: 'image' }) });
@@ -181,6 +182,31 @@ export default function Tasks() {
   }, [groups]);
   const sessionGroupMap = useMemo(() => new Map(groups.map((group) => [group.id, group])), [groups]);
   const materialGroupNameMap = useMemo(() => new Map(materialGroups.map((group) => [group.id, group.name])), [materialGroups]);
+  const groupAgentNameMap = useMemo(() => {
+    const map = new Map();
+    supportAgents.forEach((agent) => {
+      const groupIds = Array.from(new Set((agent.sessions || []).map((session) => session.group_id).filter((groupId) => groupId != null)));
+      groupIds.forEach((groupId) => {
+        const agents = map.get(groupId) || [];
+        if (!agents.some((item) => item.id === agent.id)) {
+          agents.push({ id: agent.id, name: agent.name, color: agent.color || 'blue' });
+        }
+        map.set(groupId, agents);
+      });
+    });
+    return map;
+  }, [supportAgents]);
+  const sessionGroupOptions = useMemo(
+    () => groups.map((group) => {
+      const agents = groupAgentNameMap.get(group.id) || [];
+      const agentText = agents.length ? agents.map((item) => item.name).join('、') : '未绑定';
+      return {
+        value: group.id,
+        label: `${group.name}（客服：${agentText}）`,
+      };
+    }),
+    [groupAgentNameMap, groups],
+  );
 
   const runningTaskIds = useMemo(
     () => new Set(tasks.filter((item) => ['queued', 'running', 'paused', 'cancelling'].includes(item.status)).map((item) => item.id)),
@@ -346,6 +372,22 @@ export default function Tasks() {
       },
     },
     {
+      title: '客服',
+      dataIndex: 'session_group_id',
+      width: 180,
+      render: (value) => {
+        const agents = groupAgentNameMap.get(value) || [];
+        if (!agents.length) return <Tag>未绑定</Tag>;
+        return (
+          <Space wrap size={[4, 4]}>
+            {agents.map((agent) => (
+              <Tag key={agent.id} color={agent.color || 'blue'}>{agent.name}</Tag>
+            ))}
+          </Space>
+        );
+      },
+    },
+    {
       title: '目标类型',
       key: 'target_source',
       width: 100,
@@ -458,6 +500,7 @@ export default function Tasks() {
         <Form
           form={form}
           layout="vertical"
+          className="task-form"
           onFinish={(values) => {
             if (values.send_type === 'group' && !values.material_group_id) {
               message.error('请选择素材分组');
@@ -484,211 +527,238 @@ export default function Tasks() {
             saveMutation.mutate(values);
           }}
         >
-          <Form.Item name="name" label="任务名称" rules={[{ required: true, message: '请输入任务名称' }]}>
-            <Input maxLength={150} />
-          </Form.Item>
-          <Form.Item name="send_type" label="素材发送类型" rules={[{ required: true }]}>
-            <Radio.Group>
-              <Radio value="single">单项发送</Radio>
-              <Radio value="group">组合发送</Radio>
-              <Radio value="concat">拼接发送</Radio>
-            </Radio.Group>
-          </Form.Item>
-          {sendType === 'group' ? (
-            <Form.Item
-              name="material_group_id"
-              label="选择素材分组"
-              extra="支持文字、图片、名片或混合分组。每个客户只随机发送一条素材；优先级越高越可能先被抽取，一轮内所有素材发送成功后再重新随机。"
-              rules={[{ required: true, message: '请选择素材分组' }]}
-            >
-              <Select
-                showSearch
-                optionFilterProp="label"
-                options={materialGroups.map((group) => ({
-                  value: group.id,
-                  label: `${group.name}（文字${group.text_count || 0} / 图片${group.image_count || 0} / 名片${group.contact_count || 0}）`,
-                  disabled: !group.material_count,
-                }))}
-              />
+          <div className="task-form-section">
+            <div className="task-form-section-title">1、任务名称</div>
+            <Form.Item name="name" label="任务名称" rules={[{ required: true, message: '请输入任务名称' }]} style={{ marginBottom: 0 }}>
+              <Input maxLength={150} />
             </Form.Item>
-          ) : sendType === 'concat' ? (
-            <Form.Item
-              name="material_group_ids"
-              label="选择拼接素材分组"
-              extra="按选择顺序，每个分组仅从文字素材中按优先级加权随机抽取一条，前一条结尾直接连接后一条开头，不自动添加换行或空格。"
-              rules={[{ required: true, type: 'array', min: 2, message: '至少选择两个文字素材分组' }]}
-            >
-              <Select
-                mode="multiple"
-                showSearch
-                optionFilterProp="label"
-                placeholder="请按拼接顺序选择至少两个分组"
-                options={materialGroups.map((group) => ({
-                  value: group.id,
-                  label: `${group.name}（${group.text_count || 0}条文字）`,
-                  disabled: !group.text_count,
-                }))}
-              />
+          </div>
+
+          <div className="task-form-section">
+            <div className="task-form-section-title">2、素材发送类型</div>
+            <Form.Item name="send_type" label="素材发送类型" rules={[{ required: true }]} style={{ marginBottom: 16 }}>
+              <Radio.Group>
+                <Radio value="single">单项发送</Radio>
+                <Radio value="group">组合发送</Radio>
+                <Radio value="concat">拼接发送</Radio>
+              </Radio.Group>
             </Form.Item>
-          ) : (
-            <>
-          <Form.Item name="content_mode" label="任务文字内容来源">
-            <Radio.Group>
-              <Radio value="manual">手动输入</Radio>
-              <Radio value="material">选择素材</Radio>
-            </Radio.Group>
-          </Form.Item>
-          {contentMode === 'material' ? (
-            <Form.Item name="content_material_id" label="选择文字素材" rules={[{ required: true, message: '请选择文字素材' }]}>
-              <Select
-                showSearch
-                optionFilterProp="label"
-                options={textMaterials.map((item) => ({ value: item.id, label: `${item.name}（优先级 ${item.priority}）` }))}
-              />
-            </Form.Item>
-          ) : (
-            <Form.Item name="content" label="任务文字内容">
-              <Input.TextArea rows={5} maxLength={5000} showCount />
-            </Form.Item>
-          )}
-          <Form.Item name="image_mode" label="任务图片来源">
-            <Radio.Group>
-              <Radio value="manual">手动上传</Radio>
-              <Radio value="material">选择素材</Radio>
-            </Radio.Group>
-          </Form.Item>
-          {imageMode === 'material' ? (
-            <Form.Item name="image_material_id" label="选择图片素材" rules={[{ required: true, message: '请选择图片素材' }]}>
-              <Select
-                showSearch
-                allowClear
-                optionFilterProp="label"
-                options={imageMaterials.map((item) => ({ value: item.id, label: `${item.name}（优先级 ${item.priority}）` }))}
-              />
-            </Form.Item>
-          ) : (
-            <Form.Item name="image" label="任务图片" valuePropName="fileList" getValueFromEvent={normFile}>
-              <Upload accept="image/*" maxCount={1} beforeUpload={() => false} listType="picture">
-                <Button>选择图片</Button>
-              </Upload>
-            </Form.Item>
-          )}
-          <Form.Item name="contact_material_id" label="选择名片素材">
-            <Select
-              allowClear
-              showSearch
-              optionFilterProp="label"
-              placeholder="不发送名片可不选"
-              options={[
-                ...(editing?.contact_card ? [{ value: '__existing__', label: '保留原名片' }] : []),
-                ...contactMaterials.map((item) => ({ value: item.id, label: `${item.name}（优先级 ${item.priority}）` })),
-              ]}
-            />
-          </Form.Item>
-            </>
-          )}
-          <Form.Item name="session_group_id" label="选择执行任务的Session分类">
-            <Select
-              allowClear
-              placeholder="不选则使用全部已连接Session"
-              options={groups.map((group) => ({ value: group.id, label: group.name }))}
-            />
-          </Form.Item>
-          <Form.Item name="target_source" label="选择发送给谁">
-            <Radio.Group>
-              <Radio value="imported">导入数据</Radio>
-              <Radio value="contacts">联系人好友</Radio>
-            </Radio.Group>
-          </Form.Item>
-          {targetSource !== 'contacts' ? (
-            <>
-          <Form.Item name="targets_mode" label="导入数据方式">
-            <Radio.Group>
-              <Radio value="manual">手动导入TXT</Radio>
-              <Radio value="profile">选择客户资料</Radio>
-            </Radio.Group>
-          </Form.Item>
-          <Form.Item name="target_type" label="目标类型" rules={[{ required: true, message: '请选择目标类型' }]}>
-            <Radio.Group
-              onChange={() => {
-                form.setFieldValue('customer_profile_id', undefined);
-                form.setFieldValue('targets_file', undefined);
-              }}
-            >
-              <Radio value="phone">手机号</Radio>
-              <Radio value="username">用户名</Radio>
-            </Radio.Group>
-          </Form.Item>
-          {targetsMode === 'profile' ? (
-            <Form.Item name="customer_profile_id" label="客户资料" rules={[{ required: true, message: '请选择客户资料' }]}>
-              <Select
-                showSearch
-                optionFilterProp="label"
-                options={customerProfiles
-                  .filter((item) => (item.target_type || 'phone') === (targetType || 'phone'))
-                  .map((item) => ({ value: item.id, label: `${item.name}（${item.total_count}个）` }))}
-              />
-            </Form.Item>
-          ) : (
-            <Form.Item
-              name="targets_file"
-              label="导入TXT"
-              valuePropName="fileList"
-              getValueFromEvent={normFile}
-              rules={[{ required: !editing, message: `请导入${targetType === 'username' ? '用户名' : '手机号'}TXT文件` }]}
-            >
-              <Upload accept=".txt" maxCount={1} beforeUpload={() => false}>
-                <Button>导入TXT</Button>
-              </Upload>
-            </Form.Item>
-          )}
-            </>
-          ) : (
-            <div style={{ marginBottom: 20, padding: '12px 16px', background: '#f5f8ff', borderRadius: 8, color: '#475467' }}>
-              每个Session会从自己的Telegram通讯录好友中随机选择，最多成功发送下方设定的数量；无需导入TXT或选择客户资料。
-            </div>
-          )}
-          <Form.Item name="messages_per_target" label="每个Session成功发送条数" rules={[{ required: true, message: '请输入发送条数' }]}>
-            <InputNumber min={1} max={50} style={{ width: '100%' }} />
-          </Form.Item>
-          <Form.Item label="每条发送间隔" extra="同一个Session每发送一个客户后，将在此范围内随机等待；默认3～5秒。">
-            <Space.Compact block>
+            {sendType === 'group' ? (
               <Form.Item
-                name="send_interval_min"
-                noStyle
-                dependencies={['send_interval_max']}
-                rules={[
-                  { required: true, message: '请输入最小间隔' },
-                  ({ getFieldValue }) => ({
-                    validator(_, value) {
-                      const maximum = getFieldValue('send_interval_max');
-                      if (value == null || maximum == null || value <= maximum) return Promise.resolve();
-                      return Promise.reject(new Error('最小间隔不能大于最大间隔'));
-                    },
-                  }),
-                ]}
+                name="material_group_id"
+                label="选择素材分组"
+                extra="支持文字、图片、名片或混合分组。每个客户只随机发送一条素材；优先级越高越可能先被抽取，一轮内所有素材发送成功后再重新随机。"
+                rules={[{ required: true, message: '请选择素材分组' }]}
+                style={{ marginBottom: 0 }}
               >
-                <InputNumber min={0} max={3600} precision={0} addonBefore="最小" addonAfter="秒" style={{ width: '50%' }} />
+                <Select
+                  showSearch
+                  optionFilterProp="label"
+                  options={materialGroups.map((group) => ({
+                    value: group.id,
+                    label: `${group.name}（文字${group.text_count || 0} / 图片${group.image_count || 0} / 名片${group.contact_count || 0}）`,
+                    disabled: !group.material_count,
+                  }))}
+                />
               </Form.Item>
+            ) : sendType === 'concat' ? (
               <Form.Item
-                name="send_interval_max"
-                noStyle
-                dependencies={['send_interval_min']}
-                rules={[
-                  { required: true, message: '请输入最大间隔' },
-                  ({ getFieldValue }) => ({
-                    validator(_, value) {
-                      const minimum = getFieldValue('send_interval_min');
-                      if (value == null || minimum == null || value >= minimum) return Promise.resolve();
-                      return Promise.reject(new Error('最大间隔不能小于最小间隔'));
-                    },
-                  }),
-                ]}
+                name="material_group_ids"
+                label="选择拼接素材分组"
+                extra="按选择顺序，每个分组仅从文字素材中按优先级加权随机抽取一条，前一条结尾直接连接后一条开头，不自动添加换行或空格。"
+                rules={[{ required: true, type: 'array', min: 2, message: '至少选择两个文字素材分组' }]}
+                style={{ marginBottom: 0 }}
               >
-                <InputNumber min={0} max={3600} precision={0} addonBefore="最大" addonAfter="秒" style={{ width: '50%' }} />
+                <Select
+                  mode="multiple"
+                  showSearch
+                  optionFilterProp="label"
+                  placeholder="请按拼接顺序选择至少两个分组"
+                  options={materialGroups.map((group) => ({
+                    value: group.id,
+                    label: `${group.name}（${group.text_count || 0}条文字）`,
+                    disabled: !group.text_count,
+                  }))}
+                />
               </Form.Item>
-            </Space.Compact>
-          </Form.Item>
+            ) : (
+              <>
+                <Form.Item name="content_mode" label="任务文字内容来源" style={{ marginBottom: 16 }}>
+                  <Radio.Group>
+                    <Radio value="manual">手动输入</Radio>
+                    <Radio value="material">选择素材</Radio>
+                  </Radio.Group>
+                </Form.Item>
+                {contentMode === 'material' ? (
+                  <Form.Item name="content_material_id" label="选择文字素材" rules={[{ required: true, message: '请选择文字素材' }]} style={{ marginBottom: 16 }}>
+                    <Select
+                      showSearch
+                      optionFilterProp="label"
+                      options={textMaterials.map((item) => ({ value: item.id, label: `${item.name}（优先级 ${item.priority}）` }))}
+                    />
+                  </Form.Item>
+                ) : (
+                  <Form.Item name="content" label="任务文字内容" style={{ marginBottom: 16 }}>
+                    <Input.TextArea rows={5} maxLength={5000} showCount />
+                  </Form.Item>
+                )}
+                <Form.Item name="image_mode" label="任务图片来源" style={{ marginBottom: 16 }}>
+                  <Radio.Group>
+                    <Radio value="manual">手动上传</Radio>
+                    <Radio value="material">选择素材</Radio>
+                  </Radio.Group>
+                </Form.Item>
+                {imageMode === 'material' ? (
+                  <Form.Item name="image_material_id" label="选择图片素材" rules={[{ required: true, message: '请选择图片素材' }]} style={{ marginBottom: 16 }}>
+                    <Select
+                      showSearch
+                      allowClear
+                      optionFilterProp="label"
+                      options={imageMaterials.map((item) => ({ value: item.id, label: `${item.name}（优先级 ${item.priority}）` }))}
+                    />
+                  </Form.Item>
+                ) : (
+                  <Form.Item name="image" label="任务图片" valuePropName="fileList" getValueFromEvent={normFile} style={{ marginBottom: 16 }}>
+                    <Upload accept="image/*" maxCount={1} beforeUpload={() => false} listType="picture">
+                      <Button>选择图片</Button>
+                    </Upload>
+                  </Form.Item>
+                )}
+                <Form.Item name="contact_material_id" label="选择名片素材" style={{ marginBottom: 0 }}>
+                  <Select
+                    allowClear
+                    showSearch
+                    optionFilterProp="label"
+                    placeholder="不发送名片可不选"
+                    options={[
+                      ...(editing?.contact_card ? [{ value: '__existing__', label: '保留原名片' }] : []),
+                      ...contactMaterials.map((item) => ({ value: item.id, label: `${item.name}（优先级 ${item.priority}）` })),
+                    ]}
+                  />
+                </Form.Item>
+              </>
+            )}
+          </div>
+
+          <div className="task-form-section">
+            <div className="task-form-section-title">3、选择执行任务的Session分类</div>
+            <Form.Item
+              name="session_group_id"
+              label="选择执行任务的Session分类"
+              extra="请检查session分类是否绑定好客服，否则不能查看消息回复情况。"
+              rules={[{ required: true, message: '请选择执行任务的Session分类' }]}
+              style={{ marginBottom: 0 }}
+            >
+              <Select
+                placeholder="请选择要执行任务的Session分类"
+                options={sessionGroupOptions}
+              />
+            </Form.Item>
+          </div>
+
+          <div className="task-form-section">
+            <div className="task-form-section-title">4、选择发送给谁</div>
+            <Form.Item name="target_source" label="选择发送给谁" style={{ marginBottom: 16 }}>
+              <Radio.Group>
+                <Radio value="imported">导入数据</Radio>
+                <Radio value="contacts">联系人好友</Radio>
+              </Radio.Group>
+            </Form.Item>
+            {targetSource !== 'contacts' ? (
+              <>
+                <Form.Item name="targets_mode" label="导入数据方式" style={{ marginBottom: 16 }}>
+                  <Radio.Group>
+                    <Radio value="manual">手动导入TXT</Radio>
+                    <Radio value="profile">选择客户资料</Radio>
+                  </Radio.Group>
+                </Form.Item>
+                <Form.Item name="target_type" label="目标类型" rules={[{ required: true, message: '请选择目标类型' }]} style={{ marginBottom: 16 }}>
+                  <Radio.Group
+                    onChange={() => {
+                      form.setFieldValue('customer_profile_id', undefined);
+                      form.setFieldValue('targets_file', undefined);
+                    }}
+                  >
+                    <Radio value="phone">手机号</Radio>
+                    <Radio value="username">用户名</Radio>
+                  </Radio.Group>
+                </Form.Item>
+                {targetsMode === 'profile' ? (
+                  <Form.Item name="customer_profile_id" label="客户资料" rules={[{ required: true, message: '请选择客户资料' }]} style={{ marginBottom: 0 }}>
+                    <Select
+                      showSearch
+                      optionFilterProp="label"
+                      options={customerProfiles
+                        .filter((item) => (item.target_type || 'phone') === (targetType || 'phone'))
+                        .map((item) => ({ value: item.id, label: `${item.name}（${item.total_count}个）` }))}
+                    />
+                  </Form.Item>
+                ) : (
+                  <Form.Item
+                    name="targets_file"
+                    label="导入TXT"
+                    valuePropName="fileList"
+                    getValueFromEvent={normFile}
+                    rules={[{ required: !editing, message: `请导入${targetType === 'username' ? '用户名' : '手机号'}TXT文件` }]}
+                    style={{ marginBottom: 0 }}
+                  >
+                    <Upload accept=".txt" maxCount={1} beforeUpload={() => false}>
+                      <Button>导入TXT</Button>
+                    </Upload>
+                  </Form.Item>
+                )}
+              </>
+            ) : (
+              <div className="task-form-tip">
+                每个Session会从自己的Telegram通讯录好友中随机选择，最多成功发送下方设定的数量；无需导入TXT或选择客户资料。
+              </div>
+            )}
+          </div>
+
+          <div className="task-form-section">
+            <div className="task-form-section-title">5、发送数量与间隔</div>
+            <Form.Item name="messages_per_target" label="每个Session成功发送条数" rules={[{ required: true, message: '请输入发送条数' }]} style={{ marginBottom: 16 }}>
+              <InputNumber min={1} max={50} style={{ width: '100%' }} />
+            </Form.Item>
+            <Form.Item label="每条发送间隔" extra="同一个Session每发送一个客户后，将在此范围内随机等待；默认3～5秒。" style={{ marginBottom: 0 }}>
+              <Space.Compact block>
+                <Form.Item
+                  name="send_interval_min"
+                  noStyle
+                  dependencies={['send_interval_max']}
+                  rules={[
+                    { required: true, message: '请输入最小间隔' },
+                    ({ getFieldValue }) => ({
+                      validator(_, value) {
+                        const maximum = getFieldValue('send_interval_max');
+                        if (value == null || maximum == null || value <= maximum) return Promise.resolve();
+                        return Promise.reject(new Error('最小间隔不能大于最大间隔'));
+                      },
+                    }),
+                  ]}
+                >
+                  <InputNumber min={0} max={3600} precision={0} addonBefore="最小" addonAfter="秒" style={{ width: '50%' }} />
+                </Form.Item>
+                <Form.Item
+                  name="send_interval_max"
+                  noStyle
+                  dependencies={['send_interval_min']}
+                  rules={[
+                    { required: true, message: '请输入最大间隔' },
+                    ({ getFieldValue }) => ({
+                      validator(_, value) {
+                        const minimum = getFieldValue('send_interval_min');
+                        if (value == null || minimum == null || value >= minimum) return Promise.resolve();
+                        return Promise.reject(new Error('最大间隔不能小于最小间隔'));
+                      },
+                    }),
+                  ]}
+                >
+                  <InputNumber min={0} max={3600} precision={0} addonBefore="最大" addonAfter="秒" style={{ width: '50%' }} />
+                </Form.Item>
+              </Space.Compact>
+            </Form.Item>
+          </div>
         </Form>
       </Modal>
 
