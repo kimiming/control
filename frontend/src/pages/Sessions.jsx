@@ -91,6 +91,7 @@ const sessionLogStatusText = {
   unhealthy: '异常',
   unchecked: '未检查',
   unauthorized: '未授权',
+  blocked: '账号已封禁',
   restricted: '疑似双向号',
   normal: '正常（非双向号）',
   unknown: '返回文案未识别，请重试',
@@ -118,7 +119,7 @@ function translateSessionLogMessage(value) {
   if (match) return match[1] === 'none' ? '已取消绑定客服' : `已移动到客服 ID：${match[1]}`;
   match = value.match(/^Imported (.+)$/);
   if (match) return `已导入文件：${match[1]}`;
-  match = value.match(/^(normal|restricted|unknown|timeout|unauthorized|error):\s*(.*)$/s);
+  match = value.match(/^(normal|blocked|restricted|unknown|timeout|unauthorized|error):\s*(.*)$/s);
   if (match) return `${sessionLogStatusText[match[1]]}：${match[2] || '-'}`;
   return sessionLogStatusText[value] || value;
 }
@@ -352,6 +353,7 @@ export default function Sessions() {
       ));
       const resultText = {
         normal: '账号正常，不是双向号',
+        blocked: '账号已封禁',
         restricted: '账号异常，疑似双向号',
         unknown: '返回文案未识别，请重试',
         timeout: '检测超时',
@@ -369,8 +371,8 @@ export default function Sessions() {
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['sessions'] });
       setSelectedRowKeys([]);
-      const text = `批量检测完成：选中 ${data.requested} 个，找到 ${data.found} 个，已检测 ${data.checked} 个，跳过 ${data.skipped} 个；正常 ${data.normal} 个，疑似双向号 ${data.restricted} 个，未识别 ${data.unknown} 个，超时 ${data.timeout} 个，未授权 ${data.unauthorized} 个，异常 ${data.error} 个`;
-      if (data.skipped || data.error) message.warning(text, 10); else message.success(text, 8);
+      const text = `批量检测完成：选中 ${data.requested} 个，找到 ${data.found} 个，已检测 ${data.checked} 个，跳过 ${data.skipped} 个；正常 ${data.normal} 个，已封禁 ${data.blocked} 个，疑似双向号 ${data.restricted} 个，未识别 ${data.unknown} 个，超时 ${data.timeout} 个，未授权 ${data.unauthorized} 个，异常 ${data.error} 个`;
+      if (data.blocked || data.restricted || data.unknown || data.timeout || data.unauthorized || data.skipped || data.error) message.warning(text, 10); else message.success(text, 8);
     },
     onError: (error) => message.error(error?.response?.data?.detail || error.message || '批量双向号检测失败'),
   });

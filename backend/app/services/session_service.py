@@ -37,6 +37,13 @@ class SessionService:
         "no limits",
         "free as a bird",
     )
+    _SPAM_BOT_BLOCKED_MARKERS = (
+        "your account was blocked",
+        "your account has been blocked",
+        "your account is blocked",
+        "account was banned",
+        "account has been banned",
+    )
     _SPAM_BOT_RESTRICTED_MARKERS = (
         "limited",
         "restriction",
@@ -526,6 +533,7 @@ class SessionService:
             "checked": 0,
             "skipped": len(unique_ids) - len(found_ids),
             "normal": 0,
+            "blocked": 0,
             "restricted": 0,
             "unknown": 0,
             "timeout": 0,
@@ -1013,6 +1021,8 @@ class SessionService:
         normalized = (response_text or "").strip().lower()
         if any(marker in normalized for marker in self._SPAM_BOT_NORMAL_MARKERS):
             return "normal"
+        if any(marker in normalized for marker in self._SPAM_BOT_BLOCKED_MARKERS):
+            return "blocked"
         if any(marker in normalized for marker in self._SPAM_BOT_RESTRICTED_MARKERS):
             return "restricted"
         return "unknown"
