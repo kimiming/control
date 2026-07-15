@@ -208,6 +208,18 @@ export default function Tasks() {
     [groupAgentNameMap, groups],
   );
 
+  const renderSessionGroupOption = (option) => {
+    const group = sessionGroupMap.get(option.value);
+    const agents = groupAgentNameMap.get(option.value) || [];
+    const agentText = agents.length ? agents.map((item) => item.name).join('、') : '未绑定';
+    return (
+      <span>
+        <Tag color={group?.color || 'blue'}>{group?.name || option.label}</Tag>
+        <span>（客服：{agentText}）</span>
+      </span>
+    );
+  };
+
   const runningTaskIds = useMemo(
     () => new Set(tasks.filter((item) => ['queued', 'running', 'paused', 'cancelling'].includes(item.status)).map((item) => item.id)),
     [tasks],
@@ -652,6 +664,8 @@ export default function Tasks() {
               <Select
                 placeholder="请选择要执行任务的Session分类"
                 options={sessionGroupOptions}
+                optionRender={renderSessionGroupOption}
+                labelRender={renderSessionGroupOption}
               />
             </Form.Item>
           </div>
