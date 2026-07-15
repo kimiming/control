@@ -1,8 +1,12 @@
 import json
+from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
+from starlette.background import BackgroundTask
 
 from app.core.auth import get_current_user
 from app.core.database import get_db
@@ -56,6 +60,41 @@ async def delete_session(session_id: int, db: Session = Depends(get_db), user: U
 @router.post("/import")
 async def import_sessions(file: UploadFile = File(...), db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, int]:
     return await session_service.import_sessions(db, file, user.id)
+
+
+def _session_export_response(
+    db: Session,
+    user: User,
+    session_ids: list[int] | None,
+    scope: str,
+) -> FileResponse:
+    try:
+        archive_path, summary = session_service.export_session_files(db, user.id, session_ids)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    filename = f"tg_sessions_{scope}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
+    return FileResponse(
+        archive_path,
+        media_type="application/zip",
+        filename=filename,
+        headers={
+            "X-Session-Requested": str(summary["requested"]),
+            "X-Session-Found": str(summary["found"]),
+            "X-Session-Exported": str(summary["exported"]),
+            "X-Session-Missing": str(summary["missing"]),
+        },
+        background=BackgroundTask(Path(archive_path).unlink, missing_ok=True),
+    )
+
+
+@router.get("/export")
+def export_all_sessions(db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> FileResponse:
+    return _session_export_response(db, user, None, "all")
+
+
+@router.post("/export")
+def export_selected_sessions(payload: SessionIds, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> FileResponse:
+    return _session_export_response(db, user, payload.session_ids, "selected")
 
 
 @router.get("/groups")

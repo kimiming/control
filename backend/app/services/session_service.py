@@ -1,7 +1,11 @@
 import asyncio
 import csv
 import io
+import os
 import re
+import sqlite3
+import tempfile
+import zipfile
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -258,6 +262,59 @@ class SessionService:
         if owner_id is not None:
             stmt = stmt.where(TelegramSession.owner_id == owner_id)
         return list(db.scalars(stmt).all())
+
+    def export_session_files(
+        self,
+        db: Session,
+        owner_id: int,
+        session_ids: list[int] | None = None,
+    ) -> tuple[Path, dict[str, int]]:
+        sessions = (
+            self.get_sessions_by_ids(db, list(dict.fromkeys(session_ids)), owner_id)
+            if session_ids is not None
+            else self.list_sessions(db, owner_id=owner_id)
+        )
+        requested = len(set(session_ids)) if session_ids is not None else len(sessions)
+        session_dir = Path(settings.session_dir).resolve()
+        archive_fd, archive_name = tempfile.mkstemp(prefix="tg_sessions_", suffix=".zip")
+        os.close(archive_fd)
+        archive_path = Path(archive_name)
+        exported = 0
+
+        try:
+            with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                for session in sessions:
+                    source = (session_dir / f"{session.session_name}.session").resolve()
+                    if source.parent != session_dir or not source.is_file():
+                        continue
+
+                    snapshot_fd, snapshot_name = tempfile.mkstemp(suffix=".session")
+                    os.close(snapshot_fd)
+                    snapshot_path = Path(snapshot_name)
+                    try:
+                        with sqlite3.connect(f"{source.as_uri()}?mode=ro", uri=True, timeout=10) as source_db:
+                            with sqlite3.connect(snapshot_path) as snapshot_db:
+                                source_db.backup(snapshot_db)
+                        archive.write(snapshot_path, arcname=f"{session.session_name}.session")
+                        exported += 1
+                    except sqlite3.Error:
+                        continue
+                    finally:
+                        snapshot_path.unlink(missing_ok=True)
+        except Exception:
+            archive_path.unlink(missing_ok=True)
+            raise
+
+        if exported == 0:
+            archive_path.unlink(missing_ok=True)
+            raise ValueError("没有可导出的Session文件")
+
+        return archive_path, {
+            "requested": requested,
+            "found": len(sessions),
+            "exported": exported,
+            "missing": requested - exported,
+        }
 
     def create_group(self, db: Session, name: str, description: str | None = None, color: str = "blue", owner_id: int | None = None) -> SessionGroup:
         group = SessionGroup(owner_id=owner_id, name=name, description=description, color=color or "blue")

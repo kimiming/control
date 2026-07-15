@@ -48,6 +48,14 @@ export const importSessions = (file) => {
   formData.append('file', file);
   return api.post('/sessions/import', formData).then((res) => res.data);
 };
+const parseSessionExport = (res) => ({
+  blob: res.data,
+  requested: Number(res.headers['x-session-requested'] || 0),
+  exported: Number(res.headers['x-session-exported'] || 0),
+  missing: Number(res.headers['x-session-missing'] || 0),
+});
+export const exportAllSessions = () => api.get('/sessions/export', { responseType: 'blob', timeout: 0 }).then(parseSessionExport);
+export const exportSessions = (sessionIds) => api.post('/sessions/export', { session_ids: sessionIds }, { responseType: 'blob', timeout: 0 }).then(parseSessionExport);
 export const getGroups = () => api.get('/sessions/groups').then((res) => res.data);
 export const createGroup = (data) => api.post('/sessions/groups', data).then((res) => res.data);
 export const moveSessions = (data) => api.post('/sessions/move', data).then((res) => res.data);

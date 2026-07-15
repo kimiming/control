@@ -1,4 +1,4 @@
-import { CheckCircleOutlined, ClearOutlined, DeleteOutlined, DisconnectOutlined, ImportOutlined, LinkOutlined, ReloadOutlined, SafetyCertificateOutlined, SearchOutlined, TeamOutlined, UsergroupAddOutlined } from '@ant-design/icons';
+import { CheckCircleOutlined, ClearOutlined, DeleteOutlined, DisconnectOutlined, DownloadOutlined, ImportOutlined, LinkOutlined, ReloadOutlined, SafetyCertificateOutlined, SearchOutlined, TeamOutlined, UsergroupAddOutlined } from '@ant-design/icons';
 import { Button, Card, Drawer, Form, Input, InputNumber, Modal, Popconfirm, Radio, Select, Space, Spin, Table, Tag, Upload, message } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import dayjs from 'dayjs';
@@ -10,6 +10,8 @@ import {
   connectSessions,
   deleteSession,
   disconnectSessions,
+  exportAllSessions,
+  exportSessions,
   getGroups,
   getSessionLogs,
   getSessionTaskLogs,
@@ -119,6 +121,17 @@ function translateSessionLogMessage(value) {
   match = value.match(/^(normal|restricted|unknown|timeout|unauthorized|error):\s*(.*)$/s);
   if (match) return `${sessionLogStatusText[match[1]]}：${match[2] || '-'}`;
   return sessionLogStatusText[value] || value;
+}
+
+function downloadSessionArchive(data, scope) {
+  const url = URL.createObjectURL(data.blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `TG_Session_${scope}_${dayjs().format('YYYYMMDD_HHmmss')}.zip`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
 }
 
 export default function Sessions() {
@@ -268,6 +281,28 @@ export default function Sessions() {
       message.error(error?.response?.data?.detail || error.message || '批量断开失败');
       queryClient.invalidateQueries({ queryKey: ['sessions'] });
     },
+  });
+
+  const exportAllMutation = useMutation({
+    mutationFn: exportAllSessions,
+    onSuccess: (data) => {
+      downloadSessionArchive(data, '全部');
+      const text = `已导出 ${data.exported} 个Session文件`;
+      if (data.missing) message.warning(`${text}，另有 ${data.missing} 个文件缺失或无法读取`, 8);
+      else message.success(text);
+    },
+    onError: (error) => message.error(error?.response?.data?.detail || error.message || '导出全部Session失败'),
+  });
+
+  const exportSelectedMutation = useMutation({
+    mutationFn: () => exportSessions(selectedRowKeys),
+    onSuccess: (data) => {
+      downloadSessionArchive(data, '已选');
+      const text = `已导出 ${data.exported} 个Session文件`;
+      if (data.missing) message.warning(`${text}，另有 ${data.missing} 个文件缺失或无法读取`, 8);
+      else message.success(text);
+    },
+    onError: (error) => message.error(error?.response?.data?.detail || error.message || '批量导出Session失败'),
   });
 
   const groupMutation = useMutation({
@@ -628,6 +663,22 @@ export default function Sessions() {
             onClick={() => { setContactFileList([]); setContactImportLimit(10); setContactImportTarget({ mode: 'batch', sessionIds: [...selectedRowKeys] }); }}
           >
             批量导入通讯录
+          </Button>
+          <Button
+            icon={<DownloadOutlined />}
+            loading={exportAllMutation.isPending}
+            disabled={exportSelectedMutation.isPending}
+            onClick={() => exportAllMutation.mutate()}
+          >
+            导出全部Session号
+          </Button>
+          <Button
+            icon={<DownloadOutlined />}
+            loading={exportSelectedMutation.isPending}
+            disabled={!selectedRowKeys.length || exportAllMutation.isPending}
+            onClick={() => exportSelectedMutation.mutate()}
+          >
+            批量导出Session号
           </Button>
           <Button onClick={() => setLogsOpen(true)}>操作日志</Button>
         </div>
