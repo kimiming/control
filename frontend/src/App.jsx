@@ -10,6 +10,7 @@ import Materials from './pages/Materials.jsx';
 import Customers from './pages/Customers.jsx';
 import CustomerProfiles from './pages/CustomerProfiles.jsx';
 import Login from './pages/Login.jsx';
+import UsageDocs from './pages/UsageDocs.jsx';
 import Users from './pages/Users.jsx';
 
 function ProtectedApp() {
@@ -22,6 +23,7 @@ function ProtectedApp() {
       <Routes>
         <Route path="/" element={<Navigate to="/sessions" replace />} />
         <Route path="/sessions" element={<Sessions />} />
+        <Route path="/usage-docs" element={<UsageDocs />} />
         <Route path="/messages" element={<Messages />} />
         <Route path="/tasks" element={<Tasks />} />
         <Route path="/materials" element={<Materials />} />

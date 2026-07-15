@@ -11,7 +11,6 @@ from fastapi import UploadFile
 from openpyxl import load_workbook
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, object_session
-from telethon import events
 from telethon import utils as telethon_utils
 from telethon.tl.functions.contacts import DeleteContactsRequest, GetContactsRequest, ImportContactsRequest
 from telethon.tl.types import InputPhoneContact
@@ -29,6 +28,23 @@ settings = get_settings()
 
 
 class SessionService:
+    _SPAM_BOT_NORMAL_MARKERS = (
+        "good news",
+        "no limits",
+        "free as a bird",
+    )
+    _SPAM_BOT_RESTRICTED_MARKERS = (
+        "limited",
+        "restriction",
+        "spam",
+        "cannot send",
+        "can't send",
+        "too many",
+        "deactivated",
+        "prevented",
+        "complaints",
+    )
+
     def list_sessions(
         self,
         db: Session,
@@ -393,8 +409,6 @@ class SessionService:
         db.refresh(session)
         await self.publish_status(session, "bidirectional_checking")
 
-        handler = None
-        future: asyncio.Future[str] | None = None
         await incoming_message_listener.acquire_client_operation(session.id)
         client = incoming_message_listener.get_connected_client(session.id)
         owns_client = client is None
@@ -408,22 +422,10 @@ class SessionService:
                 session.bidirectional_status = "unauthorized"
                 session.bidirectional_detail = "Telegram Session 未授权，无法联系 @SpamBot。"
             else:
-                loop = asyncio.get_running_loop()
-                future = loop.create_future()
-
-                async def spam_bot_handler(event: Any) -> None:
-                    if future and not future.done():
-                        future.set_result(event.message.text or "")
-
-                handler = spam_bot_handler
-                client.add_event_handler(handler, events.NewMessage(chats="@SpamBot"))
-                await asyncio.wait_for(client.send_message("@SpamBot", "/start"), timeout=10)
-                response_text = await asyncio.wait_for(future, timeout=10)
+                sent_message = await asyncio.wait_for(client.send_message("@SpamBot", "/start"), timeout=10)
+                response_text = await self._await_spam_bot_reply(client, sent_message.id, getattr(sent_message, "date", None))
                 session.bidirectional_detail = response_text[:10000]
-                if "Good news" in response_text or "no limits" in response_text.lower():
-                    session.bidirectional_status = "normal"
-                else:
-                    session.bidirectional_status = "restricted"
+                session.bidirectional_status = self._classify_bidirectional_response(response_text)
         except asyncio.TimeoutError:
             session.bidirectional_status = "timeout"
             session.bidirectional_detail = "检测超时：@SpamBot 在 10 秒内没有回应，或 Telegram 连接超时。"
@@ -431,8 +433,6 @@ class SessionService:
             session.bidirectional_status = "error"
             session.bidirectional_detail = str(exc)[:10000]
         finally:
-            if client and handler:
-                client.remove_event_handler(handler)
             try:
                 if owns_client and client and client.is_connected():
                     await client.disconnect()
@@ -470,6 +470,7 @@ class SessionService:
             "skipped": len(unique_ids) - len(found_ids),
             "normal": 0,
             "restricted": 0,
+            "unknown": 0,
             "timeout": 0,
             "unauthorized": 0,
             "error": 0,
@@ -477,6 +478,9 @@ class SessionService:
         for session in sessions:
             try:
                 result = await self.check_bidirectional_status(db, session.id, owner_id)
+                if result.bidirectional_status in {"restricted", "unknown"}:
+                    await asyncio.sleep(1)
+                    result = await self.check_bidirectional_status(db, session.id, owner_id)
                 summary["checked"] += 1
                 status = result.bidirectional_status or "error"
                 summary[status if status in summary else "error"] += 1
@@ -922,6 +926,39 @@ class SessionService:
             return int(float(value))
         except ValueError:
             return None
+
+    async def _await_spam_bot_reply(self, client: Any, sent_message_id: int, sent_message_date: datetime | None) -> str:
+        deadline = asyncio.get_running_loop().time() + 10
+        normalized_sent_at = self._normalize_message_datetime(sent_message_date)
+        while True:
+            async for message in client.iter_messages("@SpamBot", limit=5):
+                if getattr(message, "out", False):
+                    continue
+                message_id = getattr(message, "id", 0) or 0
+                message_date = self._normalize_message_datetime(getattr(message, "date", None))
+                if message_id <= sent_message_id:
+                    continue
+                if normalized_sent_at and message_date and message_date < normalized_sent_at:
+                    continue
+                return message.text or message.raw_text or ""
+            if asyncio.get_running_loop().time() >= deadline:
+                raise asyncio.TimeoutError()
+            await asyncio.sleep(0.5)
+
+    def _normalize_message_datetime(self, value: datetime | None) -> datetime | None:
+        if not value:
+            return None
+        if value.tzinfo:
+            return value.astimezone().replace(tzinfo=None)
+        return value
+
+    def _classify_bidirectional_response(self, response_text: str) -> str:
+        normalized = (response_text or "").strip().lower()
+        if any(marker in normalized for marker in self._SPAM_BOT_NORMAL_MARKERS):
+            return "normal"
+        if any(marker in normalized for marker in self._SPAM_BOT_RESTRICTED_MARKERS):
+            return "restricted"
+        return "unknown"
 
 
 session_service = SessionService()

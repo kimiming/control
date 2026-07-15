@@ -1,7 +1,8 @@
-import { AppstoreOutlined, ContactsOutlined, CustomerServiceOutlined, MessageOutlined, PartitionOutlined, ProfileOutlined, TeamOutlined, UserOutlined } from '@ant-design/icons';
+import { AppstoreOutlined, ContactsOutlined, CustomerServiceOutlined, FileTextOutlined, MessageOutlined, PartitionOutlined, ProfileOutlined, TeamOutlined, UserOutlined } from '@ant-design/icons';
 
 export const menuItems = [
   { key: '/sessions', icon: <UserOutlined />, label: 'Session管理' },
+  { key: '/usage-docs', icon: <FileTextOutlined />, label: '使用文档' },
   { key: '/messages', icon: <MessageOutlined />, label: '消息列表' },
   { key: '/customers', icon: <CustomerServiceOutlined />, label: '客服管理' },
   { key: '/customer-profiles', icon: <ContactsOutlined />, label: '客户资料管理' },
