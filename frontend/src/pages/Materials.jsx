@@ -98,13 +98,18 @@ export default function Materials() {
   const [moveGroupId, setMoveGroupId] = useState(null);
   const [importOpen, setImportOpen] = useState(false);
   const [imageImportOpen, setImageImportOpen] = useState(false);
+  const [filters, setFilters] = useState({});
+  const [searchKeyword, setSearchKeyword] = useState('');
   const [form] = Form.useForm();
   const [groupForm] = Form.useForm();
   const [importForm] = Form.useForm();
   const [imageImportForm] = Form.useForm();
   const materialType = Form.useWatch('material_type', form);
 
-  const { data: materials = [], isLoading } = useQuery({ queryKey: ['materials'], queryFn: () => getMaterials() });
+  const { data: materials = [], isLoading } = useQuery({
+    queryKey: ['materials', filters],
+    queryFn: () => getMaterials(filters),
+  });
   const { data: materialGroups = [] } = useQuery({ queryKey: ['material-groups'], queryFn: getMaterialGroups });
   const groupMap = useMemo(() => new Map(materialGroups.map((group) => [group.id, group])), [materialGroups]);
 
@@ -117,6 +122,12 @@ export default function Materials() {
   const renderGroupOption = (option) => {
     const group = groupMap.get(option.value);
     return group ? <Tag color={group.color || 'blue'}>{group.name}</Tag> : option.label;
+  };
+
+  const resetFilters = () => {
+    setSearchKeyword('');
+    setFilters({});
+    setSelectedRowKeys([]);
   };
 
   useEffect(() => {
@@ -212,14 +223,16 @@ export default function Materials() {
       const formData = new FormData();
       formData.append('file', values.file[0].originFileObj);
       if (values.group_id !== undefined && values.group_id !== null) formData.append('group_id', values.group_id);
+      if (values.delimiter?.trim()) formData.append('delimiter', values.delimiter.trim());
       return importTextMaterials(formData);
     },
-    onSuccess: (data) => {
+    onSuccess: (data, values) => {
       queryClient.invalidateQueries({ queryKey: ['materials'] });
       queryClient.invalidateQueries({ queryKey: ['material-groups'] });
       setImportOpen(false);
       importForm.resetFields();
-      message.success(`导入完成：已创建 ${data.created} 条文字素材，跳过 ${data.skipped} 个空行`);
+      const skippedLabel = values.delimiter?.trim() ? '个空白片段' : '个空行';
+      message.success(`导入完成：已创建 ${data.created} 条文字素材，跳过 ${data.skipped} ${skippedLabel}`);
     },
     onError: (error) => message.error(error?.response?.data?.detail || error.message || '导入失败'),
   });
@@ -313,6 +326,53 @@ export default function Materials() {
           >
             <Button danger disabled={!selectedRowKeys.length} icon={<DeleteOutlined />}>批量删除</Button>
           </Popconfirm>
+        </div>
+        <div className="toolbar-right">
+          <Input.Search
+            allowClear
+            value={searchKeyword}
+            placeholder="搜索素材名称、内容或备注"
+            style={{ width: 260 }}
+            onChange={(event) => {
+              const value = event.target.value;
+              setSearchKeyword(value);
+              if (!value) {
+                setFilters((current) => ({ ...current, keyword: undefined }));
+                setSelectedRowKeys([]);
+              }
+            }}
+            onSearch={(value) => {
+              setFilters((current) => ({ ...current, keyword: value.trim() || undefined }));
+              setSelectedRowKeys([]);
+            }}
+          />
+          <Select
+            allowClear
+            placeholder="素材类型"
+            style={{ width: 130 }}
+            value={filters.material_type}
+            options={Object.entries(materialTypeMeta).map(([value, meta]) => ({ value, label: meta.label }))}
+            onChange={(value) => {
+              setFilters((current) => ({ ...current, material_type: value }));
+              setSelectedRowKeys([]);
+            }}
+          />
+          <Select
+            allowClear
+            placeholder="所属分组"
+            style={{ width: 160 }}
+            value={filters.group_id}
+            options={[
+              { value: 0, label: '未分组' },
+              ...materialGroups.map((group) => ({ value: group.id, label: group.name })),
+            ]}
+            optionRender={renderGroupOption}
+            onChange={(value) => {
+              setFilters((current) => ({ ...current, group_id: value }));
+              setSelectedRowKeys([]);
+            }}
+          />
+          <Button onClick={resetFilters}>重置筛选</Button>
         </div>
       </div>
 
@@ -463,12 +523,20 @@ export default function Materials() {
             label="选择TXT文件"
             valuePropName="fileList"
             getValueFromEvent={normFile}
-            extra="TXT 中每个非空行会创建为一条文字素材。"
+            extra="不填写分隔符时，TXT 中每个非空行会创建为一条文字素材。"
             rules={[{ required: true, message: '请选择TXT文件' }]}
           >
             <Upload accept=".txt,text/plain" maxCount={1} beforeUpload={() => false}>
               <Button icon={<ImportOutlined />}>选择TXT文件</Button>
             </Upload>
+          </Form.Item>
+          <Form.Item
+            name="delimiter"
+            label="自定义分隔符"
+            extra="可选。填写后将按该符号拆分素材，并保留每份素材内部的多行内容。例如填写 -----。"
+            rules={[{ max: 100, message: '分隔符最多输入100个字符' }]}
+          >
+            <Input allowClear maxLength={100} placeholder="例如：-----（不填写则按一行一条拆分）" />
           </Form.Item>
           <Form.Item name="group_id" label="所属分组">
             <Select

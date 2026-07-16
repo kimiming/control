@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import UploadFile
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.models.material import Material, MaterialGroup
@@ -12,12 +12,28 @@ from app.services.image_storage import save_compressed_image
 
 
 class MaterialService:
-    def list_materials(self, db: Session, material_type: str | None = None, owner_id: int | None = None) -> list[Material]:
+    def list_materials(
+        self,
+        db: Session,
+        material_type: str | None = None,
+        owner_id: int | None = None,
+        group_id: int | None = None,
+        keyword: str | None = None,
+    ) -> list[Material]:
         stmt = select(Material).order_by(Material.priority.desc(), Material.created_at.asc())
         if owner_id is not None:
             stmt = stmt.where(Material.owner_id == owner_id)
         if material_type:
             stmt = stmt.where(Material.material_type == material_type)
+        if group_id is not None:
+            stmt = stmt.where(Material.group_id.is_(None) if group_id == 0 else Material.group_id == group_id)
+        normalized_keyword = (keyword or "").strip()
+        if normalized_keyword:
+            stmt = stmt.where(or_(
+                Material.name.contains(normalized_keyword, autoescape=True),
+                Material.content.contains(normalized_keyword, autoescape=True),
+                Material.remark.contains(normalized_keyword, autoescape=True),
+            ))
         return list(db.scalars(stmt).all())
 
     def list_groups(self, db: Session, owner_id: int | None = None) -> list[MaterialGroup]:
@@ -108,6 +124,7 @@ class MaterialService:
         file: UploadFile,
         group_id: int | None = None,
         owner_id: int | None = None,
+        delimiter: str | None = None,
     ) -> dict[str, int]:
         if not file.filename or Path(file.filename).suffix.lower() != ".txt":
             raise ValueError("Only TXT files are supported")
@@ -120,17 +137,17 @@ class MaterialService:
         base_name = Path(file.filename).stem.strip() or "导入文字"
         base_name = base_name[:120]
         materials: list[Material] = []
-        skipped = 0
-        for line_number, raw_line in enumerate(text.splitlines(), start=1):
-            content = raw_line.strip()
-            if not content:
-                skipped += 1
-                continue
+        entries, skipped, custom_split = self._split_text_entries(text, delimiter)
+        for entry_number, content in entries:
             materials.append(
                 Material(
                     owner_id=owner_id,
                     group_id=group_id,
-                    name=f"{base_name}-第{line_number}行"[:150],
+                    name=(
+                        f"{base_name}-第{entry_number}份"
+                        if custom_split
+                        else f"{base_name}-第{entry_number}行"
+                    )[:150],
                     material_type="text",
                     content=content,
                     priority=0,
@@ -142,6 +159,24 @@ class MaterialService:
         db.add_all(materials)
         db.commit()
         return {"created": len(materials), "skipped": skipped}
+
+    def _split_text_entries(
+        self,
+        text: str,
+        delimiter: str | None = None,
+    ) -> tuple[list[tuple[int, str]], int, bool]:
+        normalized_delimiter = (delimiter or "").strip()
+        custom_split = bool(normalized_delimiter)
+        raw_entries = text.split(normalized_delimiter) if custom_split else text.splitlines()
+        entries: list[tuple[int, str]] = []
+        skipped = 0
+        for entry_number, raw_entry in enumerate(raw_entries, start=1):
+            content = raw_entry.strip()
+            if not content:
+                skipped += 1
+                continue
+            entries.append((entry_number, content))
+        return entries, skipped, custom_split
 
     async def import_image_materials(
         self,

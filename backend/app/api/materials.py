@@ -1,6 +1,6 @@
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -29,8 +29,21 @@ router = APIRouter(prefix="/materials", tags=["materials"])
 
 
 @router.get("")
-def list_materials(material_type: str | None = None, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> list[dict[str, Any]]:
-    return [material_service.serialize_material(item) for item in material_service.list_materials(db, material_type, user.id)]
+def list_materials(
+    material_type: str | None = Query(default=None, pattern="^(text|image|contact)$"),
+    group_id: int | None = None,
+    keyword: str | None = Query(default=None, max_length=200),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> list[dict[str, Any]]:
+    materials = material_service.list_materials(
+        db,
+        material_type=material_type,
+        owner_id=user.id,
+        group_id=group_id,
+        keyword=keyword,
+    )
+    return [material_service.serialize_material(item) for item in materials]
 
 
 @router.get("/groups")
@@ -92,11 +105,18 @@ def batch_delete(payload: BatchDeletePayload, db: Session = Depends(get_db), use
 async def import_text_materials(
     file: UploadFile = File(...),
     group_id: int | None = Form(None),
+    delimiter: str | None = Form(default=None, max_length=100),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> dict[str, int]:
     try:
-        return await material_service.import_text_materials(db, file, group_id, user.id)
+        return await material_service.import_text_materials(
+            db,
+            file,
+            group_id,
+            user.id,
+            delimiter,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
