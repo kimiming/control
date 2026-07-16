@@ -1,4 +1,4 @@
-import { CheckCircleOutlined, ClearOutlined, DeleteOutlined, DisconnectOutlined, DownloadOutlined, ImportOutlined, LinkOutlined, ReloadOutlined, SafetyCertificateOutlined, SearchOutlined, TeamOutlined, UsergroupAddOutlined } from '@ant-design/icons';
+import { ClearOutlined, DeleteOutlined, DisconnectOutlined, DownloadOutlined, ImportOutlined, LinkOutlined, ReloadOutlined, SafetyCertificateOutlined, SearchOutlined, TeamOutlined, UsergroupAddOutlined } from '@ant-design/icons';
 import { Button, Card, Drawer, Form, Input, InputNumber, Modal, Popconfirm, Radio, Select, Space, Spin, Table, Tag, Upload, message } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import dayjs from 'dayjs';
@@ -619,14 +619,6 @@ export default function Sessions() {
             }}
           >
             新建分组
-          </Button>
-          <Button
-            icon={<CheckCircleOutlined />}
-            loading={healthMutation.isPending}
-            disabled={batchBidirectionalMutation.isPending}
-            onClick={() => healthMutation.mutate()}
-          >
-            健康检查
           </Button>
           <Button
             icon={<SafetyCertificateOutlined />}

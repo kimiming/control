@@ -16,26 +16,6 @@ const statusText = {
   error: '异常',
 };
 
-const healthColor = {
-  healthy: 'green',
-  unhealthy: 'red',
-  unknown: 'default',
-  unchecked: 'default',
-  unauthorized: 'orange',
-  restricted: 'red',
-  listener_error: 'orange',
-};
-
-const healthText = {
-  healthy: '健康',
-  unhealthy: '异常',
-  unknown: '未知',
-  unchecked: '未检查',
-  unauthorized: '未授权',
-  restricted: '受限',
-  listener_error: '监听异常',
-};
-
 const bidirectionalColor = {
   unchecked: 'default',
   checking: 'processing',
@@ -137,12 +117,6 @@ export default function SessionList({
       dataIndex: 'status',
       width: 120,
       render: (value) => <Tag color={statusColor[value]}>{statusText[value] || value || '-'}</Tag>,
-    },
-    {
-      title: '健康',
-      dataIndex: 'health_status',
-      width: 120,
-      render: (value) => <Tag color={healthColor[value]}>{healthText[value] || value || '-'}</Tag>,
     },
     {
       title: '双向号状态',
