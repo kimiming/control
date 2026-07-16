@@ -50,6 +50,17 @@ def list_conversations(
     )
 
 
+@router.get("/conversation-counts")
+def conversation_counts(
+    kf_id: int | None = None,
+    keyword: str | None = None,
+    reply_status: str | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, int]:
+    return customer_service.count_customer_conversations(db, kf_id, keyword, reply_status, user.id)
+
+
 @router.put("/{customer_id}/favorite")
 def update_customer_favorite(customer_id: int, payload: FavoritePayload, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
     try:

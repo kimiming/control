@@ -118,6 +118,7 @@ export const importTextMaterials = (data) => api.post('/materials/import-text', 
 export const importImageMaterials = (data) => api.post('/materials/import-images', data, { timeout: 0 }).then((res) => res.data);
 export const getCustomers = (params) => api.get('/customers', { params }).then((res) => res.data);
 export const getConversations = (params) => api.get('/customers/conversations', { params }).then((res) => res.data);
+export const getConversationCounts = (params) => api.get('/customers/conversation-counts', { params }).then((res) => res.data);
 export const getCustomerMessages = (id, params) => api.get(`/customers/${id}/messages`, { params }).then((res) => res.data);
 export const replyCustomer = (id, data) => api.post(`/customers/${id}/reply`, typeof data === 'string' ? { text: data } : data).then((res) => res.data);
 export const updateCustomerFavorite = (id, isFavorite) => api.put(`/customers/${id}/favorite`, { is_favorite: isFavorite }).then((res) => res.data);

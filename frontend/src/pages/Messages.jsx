@@ -5,7 +5,7 @@ import dayjs from 'dayjs';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { FixedSizeList as VirtualList } from 'react-window';
 
-import { getConversations, getCustomerMessages, getMaterials, getSupportAgents, replyCustomer, updateCustomerFavorite } from '../api/index.js';
+import { getConversationCounts, getConversations, getCustomerMessages, getMaterials, getSupportAgents, replyCustomer, updateCustomerFavorite } from '../api/index.js';
 
 const statusColor = {
   success: 'green',
@@ -60,14 +60,25 @@ export default function Messages() {
     queryFn: () => getMaterials(),
   });
 
-  const customerParams = useMemo(() => {
+  const conversationFilterParams = useMemo(() => {
     const params = {};
     if (keyword) params.keyword = keyword;
     if (kfId) params.kf_id = kfId;
     if (replyStatus) params.reply_status = replyStatus;
+    return params;
+  }, [keyword, kfId, replyStatus]);
+
+  const customerParams = useMemo(() => {
+    const params = { ...conversationFilterParams };
     if (chatTab === 'favorites') params.is_favorite = true;
     return params;
-  }, [keyword, kfId, replyStatus, chatTab]);
+  }, [conversationFilterParams, chatTab]);
+
+  const { data: conversationCounts = { all: 0, favorites: 0 } } = useQuery({
+    queryKey: ['customers', 'conversation-counts', conversationFilterParams],
+    queryFn: () => getConversationCounts(conversationFilterParams),
+    refetchInterval: 5000,
+  });
 
   const customerQuery = useInfiniteQuery({
     queryKey: ['customers', customerParams],
@@ -298,8 +309,8 @@ export default function Messages() {
             setSelected(null);
           }}
           items={[
-            { key: 'all', label: '全部聊天' },
-            { key: 'favorites', label: '收藏聊天' },
+            { key: 'all', label: `全部聊天（${conversationCounts.all}）` },
+            { key: 'favorites', label: `收藏聊天（${conversationCounts.favorites}）` },
           ]}
         />
         <div className="customer-virtual-list" ref={customerListRef}>

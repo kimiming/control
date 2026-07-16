@@ -59,6 +59,21 @@ class CustomerService:
             "has_more": page * page_size < total,
         }
 
+    def count_customer_conversations(
+        self,
+        db: Session,
+        kf_id: int | None = None,
+        keyword: str | None = None,
+        reply_status: str | None = None,
+        owner_id: int | None = None,
+    ) -> dict[str, int]:
+        all_stmt = self._customer_list_stmt(kf_id, keyword, reply_status, None, owner_id)
+        favorite_stmt = self._customer_list_stmt(kf_id, keyword, reply_status, True, owner_id)
+        return {
+            "all": int(db.scalar(select(func.count()).select_from(all_stmt.order_by(None).subquery())) or 0),
+            "favorites": int(db.scalar(select(func.count()).select_from(favorite_stmt.order_by(None).subquery())) or 0),
+        }
+
     def _customer_list_stmt(
         self,
         kf_id: int | None,
@@ -85,9 +100,9 @@ class CustomerService:
                 Message.direction == "outbound",
                 Message.read_status == "read",
                 or_(
-                    Message.chat_id == Customer.tg_id,
-                    Message.chat_id == Customer.username,
-                    Message.chat_id == Customer.phone_number,
+                    Message.chat_id == Customer.tg_id.collate("utf8mb4_unicode_ci"),
+                    Message.chat_id == Customer.username.collate("utf8mb4_unicode_ci"),
+                    Message.chat_id == Customer.phone_number.collate("utf8mb4_unicode_ci"),
                 ),
             ).exists()
             stmt = stmt.where(has_peer_read_message)
