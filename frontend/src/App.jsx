@@ -1,5 +1,6 @@
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { Spin } from 'antd';
+import { lazy, Suspense } from 'react';
 import { AuthProvider, useAuth } from './auth/AuthContext.jsx';
 import MainLayout from './components/Layout/MainLayout.jsx';
 import Sessions from './pages/Sessions.jsx';
@@ -13,6 +14,8 @@ import Login from './pages/Login.jsx';
 import UsageDocs from './pages/UsageDocs.jsx';
 import Users from './pages/Users.jsx';
 
+const Dashboard = lazy(() => import('./pages/Dashboard.jsx'));
+
 function ProtectedApp() {
   const auth = useAuth();
   if (auth.loading) return <Spin fullscreen />;
@@ -21,7 +24,8 @@ function ProtectedApp() {
   return (
     <MainLayout>
       <Routes>
-        <Route path="/" element={<Navigate to="/sessions" replace />} />
+        <Route path="/" element={<Navigate to="/dashboard" replace />} />
+        <Route path="/dashboard" element={<Suspense fallback={<Spin fullscreen />}><Dashboard /></Suspense>} />
         <Route path="/sessions" element={<Sessions />} />
         <Route path="/usage-docs" element={<UsageDocs />} />
         <Route path="/messages" element={<Messages />} />
@@ -30,8 +34,8 @@ function ProtectedApp() {
         <Route path="/customers" element={<Customers />} />
         <Route path="/customer-profiles" element={<CustomerProfiles />} />
         <Route path="/proxies" element={<Proxies />} />
-        <Route path="/users" element={auth.user.role === 'root' ? <Users /> : <Navigate to="/sessions" replace />} />
-        <Route path="*" element={<Navigate to="/sessions" replace />} />
+        <Route path="/users" element={auth.user.role === 'root' ? <Users /> : <Navigate to="/dashboard" replace />} />
+        <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes>
     </MainLayout>
   );

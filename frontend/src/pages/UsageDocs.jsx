@@ -2,6 +2,21 @@ import { Alert, Card, Col, Divider, Row, Space, Steps, Tag, Typography } from 'a
 
 const modules = [
   {
+    key: 'dashboard',
+    title: '控制面板',
+    color: 'geekblue',
+    features: [
+      '汇总当前登录用户的 Session、消息、素材、客户资料和任务数据。',
+      '通过动态图表展示账号连接状态、分组规模、消息趋势、客户回复状态、素材类型和任务执行情况。',
+      '默认每 30 秒自动刷新，也可以点击“刷新数据”立即更新。',
+    ],
+    usage: [
+      '登录后默认进入控制面板，先通过顶部指标卡快速了解整体业务规模。',
+      '向下查看各业务区域，定位异常 Session、未回复客户和任务发送失败情况。',
+      '图表数据仅统计当前账号有权限查看的业务数据。',
+    ],
+  },
+  {
     key: 'sessions',
     title: 'Session管理',
     color: 'blue',

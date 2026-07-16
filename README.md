@@ -4,6 +4,9 @@
 
 ## 项目能做什么
 
+- 控制面板
+  - 汇总 Session、消息、素材、客户资料和任务核心指标。
+  - 使用 ECharts 展示状态分布、7 日趋势、分组规模和任务发送质量。
 - Session 管理
   - 导入 `.session` 文件，或导入账号清单。
   - 将全部或勾选的 `.session` 文件打包导出备份。
@@ -27,7 +30,7 @@
 ## 技术栈
 
 - 后端：FastAPI、SQLAlchemy、Telethon、Redis
-- 前端：React 18、Vite、Ant Design、TanStack Query
+- 前端：React 18、Vite、Ant Design、TanStack Query、ECharts
 - 数据库：MySQL 8
 - 部署：Docker Compose、Nginx
 

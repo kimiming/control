@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import auth, customer_profiles, customers, materials, messages, proxies, sessions, support_agents, tasks
+from app.api import auth, customer_profiles, customers, dashboard, materials, messages, proxies, sessions, support_agents, tasks
 from app.core.config import get_settings
 from app.core.database import Base, engine
 from app.core.migrations import run_lightweight_migrations
@@ -32,6 +32,7 @@ app.include_router(customers.router, prefix=settings.api_prefix)
 app.include_router(customer_profiles.router, prefix=settings.api_prefix)
 app.include_router(support_agents.router, prefix=settings.api_prefix)
 app.include_router(proxies.router, prefix=settings.api_prefix)
+app.include_router(dashboard.router, prefix=settings.api_prefix)
 app.include_router(sessions.ws_router)
 
 
