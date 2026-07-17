@@ -590,6 +590,7 @@ export default function Sessions() {
             </Button>
           </Popconfirm>
           <Button
+            className="session-action-button--green"
             icon={<LinkOutlined />}
             disabled={!selectedRowKeys.length || batchDisconnectMutation.isPending}
             loading={batchConnectMutation.isPending}
@@ -604,6 +605,7 @@ export default function Sessions() {
             onConfirm={() => batchDisconnectMutation.mutate()}
           >
             <Button
+              className="session-action-button--orange"
               icon={<DisconnectOutlined />}
               disabled={!selectedRowKeys.length || batchConnectMutation.isPending}
               loading={batchDisconnectMutation.isPending}
@@ -612,6 +614,7 @@ export default function Sessions() {
             </Button>
           </Popconfirm>
           <Button
+            className="session-action-button--red"
             icon={<TeamOutlined />}
             onClick={() => {
               groupForm.setFieldsValue({ color: 'blue' });
@@ -621,6 +624,7 @@ export default function Sessions() {
             新建分组
           </Button>
           <Button
+            className="session-action-button--green"
             icon={<SafetyCertificateOutlined />}
             loading={batchBidirectionalMutation.isPending}
             disabled={!selectedRowKeys.length || bidirectionalMutation.isPending || healthMutation.isPending}
@@ -629,6 +633,7 @@ export default function Sessions() {
             批量双向号检测
           </Button>
           <Button
+            className="session-action-button--blue"
             icon={<SearchOutlined />}
             disabled={!selectedRowKeys.length || batchContactMutation.isPending}
             loading={batchContactMutation.isPending && batchContactMutation.variables === 'scan'}
@@ -652,6 +657,7 @@ export default function Sessions() {
             </Button>
           </Popconfirm>
           <Button
+            className="session-action-button--purple"
             icon={<UsergroupAddOutlined />}
             disabled={!selectedRowKeys.length}
             onClick={() => { setContactFileList([]); setContactImportLimit(10); setContactImportTarget({ mode: 'batch', sessionIds: [...selectedRowKeys] }); }}
@@ -659,6 +665,7 @@ export default function Sessions() {
             批量导入通讯录
           </Button>
           <Button
+            type="primary"
             icon={<DownloadOutlined />}
             loading={exportAllMutation.isPending}
             disabled={exportSelectedMutation.isPending}
@@ -667,6 +674,7 @@ export default function Sessions() {
             导出全部Session号
           </Button>
           <Button
+            className="session-action-button--blue"
             icon={<DownloadOutlined />}
             loading={exportSelectedMutation.isPending}
             disabled={!selectedRowKeys.length || exportAllMutation.isPending}

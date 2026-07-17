@@ -112,6 +112,72 @@ body {
   flex-wrap: wrap;
 }
 
+.session-action-row .ant-btn.session-action-button--green {
+  color: #237a3b;
+  border-color: #b7dfbe;
+  background: #e8f5e9;
+}
+
+.session-action-row .ant-btn.session-action-button--green:not(:disabled):hover {
+  color: #17652d;
+  border-color: #89c996;
+  background: #d7efdb;
+}
+
+.session-action-row .ant-btn.session-action-button--blue {
+  color: #1769aa;
+  border-color: #b7dcf7;
+  background: #e6f4ff;
+}
+
+.session-action-row .ant-btn.session-action-button--blue:not(:disabled):hover {
+  color: #0e568f;
+  border-color: #83c4ef;
+  background: #d5ecfd;
+}
+
+.session-action-row .ant-btn.session-action-button--purple {
+  color: #6f3ca5;
+  border-color: #ddc5f4;
+  background: #f3e8ff;
+}
+
+.session-action-row .ant-btn.session-action-button--purple:not(:disabled):hover {
+  color: #592a8d;
+  border-color: #c6a2ea;
+  background: #ead9fb;
+}
+
+.session-action-row .ant-btn.session-action-button--orange {
+  color: #b85c16;
+  border-color: #ffd0ad;
+  background: #fff1e6;
+}
+
+.session-action-row .ant-btn.session-action-button--orange:not(:disabled):hover {
+  color: #98470d;
+  border-color: #ffb77f;
+  background: #ffe5d1;
+}
+
+.session-action-row .ant-btn.session-action-button--red {
+  color: #b4232d;
+  border-color: #ffc9c9;
+  background: #fff0f0;
+}
+
+.session-action-row .ant-btn.session-action-button--red:not(:disabled):hover {
+  color: #951923;
+  border-color: #f69b9f;
+  background: #ffe1e2;
+}
+
+.session-action-row .ant-btn[class*="session-action-button--"]:disabled {
+  color: rgba(0, 0, 0, 0.25);
+  border-color: #d9d9d9;
+  background: rgba(0, 0, 0, 0.04);
+}
+
 .session-move-row {
   gap: 10px;
 }
