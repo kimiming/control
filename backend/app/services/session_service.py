@@ -65,6 +65,7 @@ class SessionService:
         health_status: str | None = None,
         keyword: str | None = None,
         owner_id: int | None = None,
+        bidirectional_status: str | None = None,
     ) -> list[TelegramSession]:
         stmt = select(TelegramSession).order_by(TelegramSession.created_at.asc(), TelegramSession.id.asc())
         if owner_id is not None:
@@ -83,6 +84,8 @@ class SessionService:
             stmt = stmt.where(TelegramSession.status == status)
         if health_status:
             stmt = stmt.where(TelegramSession.health_status == health_status)
+        if bidirectional_status:
+            stmt = stmt.where(TelegramSession.bidirectional_status == bidirectional_status)
         if keyword:
             like = f"%{keyword}%"
             stmt = stmt.where(

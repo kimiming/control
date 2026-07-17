@@ -47,21 +47,28 @@ const groupColorOptions = [
 ];
 
 const sessionStatusOptions = [
-  { label: '已连接', value: 'connected' },
-  { label: '连接中', value: 'connecting' },
-  { label: '未连接', value: 'disconnected' },
-  { label: '异常', value: 'error' },
+  { label: '已连接', value: 'connected', color: 'green' },
+  { label: '连接中', value: 'connecting', color: 'blue' },
+  { label: '未连接', value: 'disconnected', color: 'default' },
+  { label: '异常', value: 'error', color: 'red' },
 ];
 
-const healthStatusOptions = [
-  { label: '健康', value: 'healthy' },
-  { label: '异常', value: 'unhealthy' },
-  { label: '未知', value: 'unknown' },
-  { label: '未检查', value: 'unchecked' },
-  { label: '未授权', value: 'unauthorized' },
-  { label: '受限', value: 'restricted' },
-  { label: '监听异常', value: 'listener_error' },
+const bidirectionalStatusOptions = [
+  { label: '未检测', value: 'unchecked', color: 'default' },
+  { label: '检测中', value: 'checking', color: 'processing' },
+  { label: '正常（非双向号）', value: 'normal', color: 'green' },
+  { label: '账号已封禁', value: 'blocked', color: 'red' },
+  { label: '疑似双向号', value: 'restricted', color: 'red' },
+  { label: '返回文案未识别', value: 'unknown', color: 'blue' },
+  { label: '检测超时', value: 'timeout', color: 'orange' },
+  { label: '未授权', value: 'unauthorized', color: 'gold' },
+  { label: '检测异常', value: 'error', color: 'red' },
 ];
+
+const renderStatusOption = (option, options) => {
+  const status = options.find((item) => item.value === option.value);
+  return <Tag color={status?.color || 'default'} style={{ marginInlineEnd: 0 }}>{option.label}</Tag>;
+};
 
 const sessionLogActionText = {
   create: '创建Session',
@@ -549,14 +556,18 @@ export default function Sessions() {
             value={filters.status}
             onChange={(value) => setFilters((old) => ({ ...old, status: value }))}
             options={sessionStatusOptions}
+            optionRender={(option) => renderStatusOption(option, sessionStatusOptions)}
+            labelRender={(option) => renderStatusOption(option, sessionStatusOptions)}
           />
           <Select
             allowClear
-            placeholder="健康状态"
-            style={{ width: 150 }}
-            value={filters.health_status}
-            onChange={(value) => setFilters((old) => ({ ...old, health_status: value }))}
-            options={healthStatusOptions}
+            placeholder="双向号状态"
+            style={{ width: 180 }}
+            value={filters.bidirectional_status}
+            onChange={(value) => setFilters((old) => ({ ...old, bidirectional_status: value }))}
+            options={bidirectionalStatusOptions}
+            optionRender={(option) => renderStatusOption(option, bidirectionalStatusOptions)}
+            labelRender={(option) => renderStatusOption(option, bidirectionalStatusOptions)}
           />
           <Button
             type="primary"

@@ -26,11 +26,21 @@ def list_sessions(
     kf_id: int | None = None,
     status: str | None = None,
     health_status: str | None = None,
+    bidirectional_status: str | None = None,
     keyword: str | None = None,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> list[dict[str, Any]]:
-    sessions = session_service.list_sessions(db, group_id, kf_id, status, health_status, keyword, user.id)
+    sessions = session_service.list_sessions(
+        db,
+        group_id=group_id,
+        kf_id=kf_id,
+        status=status,
+        health_status=health_status,
+        keyword=keyword,
+        owner_id=user.id,
+        bidirectional_status=bidirectional_status,
+    )
     return [session_service.serialize_session(item) for item in sessions]
 
 
