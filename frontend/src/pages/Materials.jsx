@@ -49,6 +49,7 @@ const buildFormData = (values) => {
   if (values.material_type === 'contact') {
     formData.append('content', JSON.stringify({
       phone_number: values.contact_phone || '',
+      username: values.contact_username || '',
       first_name: values.contact_first_name || '',
       last_name: values.contact_last_name || '',
       vcard: values.contact_vcard || '',
@@ -139,6 +140,7 @@ export default function Materials() {
         material_type: editing.material_type,
         content: editing.content,
         contact_phone: contact.phone_number,
+        contact_username: contact.username,
         contact_first_name: contact.first_name,
         contact_last_name: contact.last_name,
         contact_vcard: contact.vcard,
@@ -416,6 +418,17 @@ export default function Materials() {
               <Form.Item name="contact_phone" label="名片手机号" rules={[{ required: true, message: '请输入名片手机号' }]}>
                 <Input maxLength={32} placeholder="+8613800138000" />
               </Form.Item>
+              <Form.Item
+                name="contact_username"
+                label="Telegram 用户名"
+                extra="填写后，发送名片时会同时发送可点击的聊天链接"
+                rules={[{
+                  pattern: /^@?[A-Za-z0-9_]{3,32}$/,
+                  message: '请输入 3-32 位 Telegram 用户名，可带 @',
+                }]}
+              >
+                <Input maxLength={33} placeholder="@username" />
+              </Form.Item>
               <Form.Item name="contact_first_name" label="名" rules={[{ required: true, message: '请输入名' }]}>
                 <Input maxLength={100} placeholder="张" />
               </Form.Item>
@@ -500,6 +513,7 @@ export default function Materials() {
             {viewing.material_type === 'contact' ? (
               <Descriptions column={1} bordered size="small">
                 <Descriptions.Item label="手机号">{parseContact(viewing.content).phone_number || '-'}</Descriptions.Item>
+                <Descriptions.Item label="Telegram 用户名">{parseContact(viewing.content).username || '-'}</Descriptions.Item>
                 <Descriptions.Item label="名">{parseContact(viewing.content).first_name || '-'}</Descriptions.Item>
                 <Descriptions.Item label="姓">{parseContact(viewing.content).last_name || '-'}</Descriptions.Item>
                 <Descriptions.Item label="vCard">{parseContact(viewing.content).vcard || '-'}</Descriptions.Item>

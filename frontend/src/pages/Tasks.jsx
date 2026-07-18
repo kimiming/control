@@ -859,6 +859,7 @@ export default function Tasks() {
             {viewing.send_type === 'single' && viewing.contact_card ? (
               <Descriptions column={1} bordered size="small">
                 <Descriptions.Item label="名片手机号">{viewing.contact_card.phone_number || '-'}</Descriptions.Item>
+                <Descriptions.Item label="Telegram 用户名">{viewing.contact_card.username || '-'}</Descriptions.Item>
                 <Descriptions.Item label="名">{viewing.contact_card.first_name || '-'}</Descriptions.Item>
                 <Descriptions.Item label="姓">{viewing.contact_card.last_name || '-'}</Descriptions.Item>
               </Descriptions>

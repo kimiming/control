@@ -419,7 +419,7 @@ class CustomerService:
             last_name=last_name,
             vcard=card.get("vcard") or "",
         )
-        return await asyncio.wait_for(
+        result = await asyncio.wait_for(
             client(
                 SendMediaRequest(
                     peer=entity,
@@ -430,6 +430,14 @@ class CustomerService:
             ),
             timeout=30,
         )
+        username = normalize_username(card.get("username"))
+        if username:
+            link_result = await asyncio.wait_for(
+                client.send_message(entity, f"Telegram：https://t.me/{username.removeprefix('@')}"),
+                timeout=30,
+            )
+            return link_result
+        return result
 
     def _sent_message_id(self, result: Any) -> int | None:
         direct_id = getattr(result, "id", None)
@@ -458,6 +466,7 @@ class CustomerService:
             return {}
         return {
             "phone_number": str(data.get("phone_number") or ""),
+            "username": str(data.get("username") or ""),
             "first_name": str(data.get("first_name") or ""),
             "last_name": str(data.get("last_name") or ""),
             "vcard": str(data.get("vcard") or ""),
