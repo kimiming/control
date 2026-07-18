@@ -121,7 +121,11 @@ export const getCustomers = (params) => api.get('/customers', { params }).then((
 export const getConversations = (params) => api.get('/customers/conversations', { params }).then((res) => res.data);
 export const getConversationCounts = (params) => api.get('/customers/conversation-counts', { params }).then((res) => res.data);
 export const getCustomerMessages = (id, params) => api.get(`/customers/${id}/messages`, { params }).then((res) => res.data);
-export const replyCustomer = (id, data) => api.post(`/customers/${id}/reply`, typeof data === 'string' ? { text: data } : data).then((res) => res.data);
+export const replyCustomer = (id, data) => api.post(
+  `/customers/${id}/reply`,
+  typeof data === 'string' ? { text: data } : data,
+  { timeout: 120000 },
+).then((res) => res.data);
 export const updateCustomerFavorite = (id, isFavorite) => api.put(`/customers/${id}/favorite`, { is_favorite: isFavorite }).then((res) => res.data);
 export const getCustomerProfiles = () => api.get('/customer-profiles').then((res) => res.data);
 export const getCustomerProfile = (id) => api.get(`/customer-profiles/${id}`).then((res) => res.data);
