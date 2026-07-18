@@ -421,7 +421,7 @@ export default function Materials() {
               <Form.Item
                 name="contact_username"
                 label="Telegram 用户名"
-                extra="填写后，发送名片时会同时发送可点击的聊天链接"
+                extra="用于匹配 Telegram 账号并发送原生联系人名片，不会额外发送文字"
                 rules={[{
                   pattern: /^@?[A-Za-z0-9_]{3,32}$/,
                   message: '请输入 3-32 位 Telegram 用户名，可带 @',

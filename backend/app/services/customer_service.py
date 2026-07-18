@@ -413,13 +413,24 @@ class CustomerService:
         last_name = (card.get("last_name") or "").strip()
         if not phone_number or not first_name:
             raise ValueError("Contact card phone number and first name are required")
+        username = normalize_username(card.get("username"))
+        if username:
+            try:
+                user = await asyncio.wait_for(client.get_entity(username), timeout=15)
+                resolved_phone = str(getattr(user, "phone", "") or "").strip()
+                if resolved_phone:
+                    phone_number = resolved_phone if resolved_phone.startswith("+") else f"+{resolved_phone}"
+            except Exception:
+                # Telegram may hide the phone number even when the username resolves.
+                # In that case the explicitly entered card phone remains authoritative.
+                pass
         media = InputMediaContact(
             phone_number=phone_number,
             first_name=first_name,
             last_name=last_name,
             vcard=card.get("vcard") or "",
         )
-        result = await asyncio.wait_for(
+        return await asyncio.wait_for(
             client(
                 SendMediaRequest(
                     peer=entity,
@@ -430,14 +441,6 @@ class CustomerService:
             ),
             timeout=30,
         )
-        username = normalize_username(card.get("username"))
-        if username:
-            link_result = await asyncio.wait_for(
-                client.send_message(entity, f"Telegram：https://t.me/{username.removeprefix('@')}"),
-                timeout=30,
-            )
-            return link_result
-        return result
 
     def _sent_message_id(self, result: Any) -> int | None:
         direct_id = getattr(result, "id", None)
