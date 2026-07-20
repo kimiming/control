@@ -12,7 +12,6 @@ from telethon.tl.functions.contacts import ImportContactsRequest
 from telethon.tl.types import InputMediaContact, InputPeerUser, InputPhoneContact
 
 from app.core.cache import redis_client
-from app.core.telegram import build_client
 from app.models.customer import Customer
 from app.models.material import Material
 from app.models.message import Message
@@ -21,6 +20,7 @@ from app.models.support_agent import SupportAgent
 from app.services.material_service import material_service
 from app.services.proxy_service import proxy_service
 from app.services.target_parser import normalize_username
+from app.services.session_command_bus import session_command_bus
 
 
 class CustomerService:
@@ -309,60 +309,28 @@ class CustomerService:
         material: Material | None,
         proxy_url: str | None,
     ) -> tuple[str, str | None, int | None]:
-        from app.services.incoming_listener import incoming_message_listener
-
-        await incoming_message_listener.acquire_client_operation(session.id)
-        client = incoming_message_listener.get_connected_client(session.id)
-        owns_client = client is None
-        if owns_client:
-            if await redis_client.exists(f"marketing:session_lock:{session.id}"):
-                incoming_message_listener.release_client_operation(session.id)
-                raise RuntimeError("Session正在执行发送任务，请稍后回复")
-            await incoming_message_listener.pause_session(session.id)
-            client = build_client(session.session_name, proxy_url)
-        try:
-            if owns_client:
-                await asyncio.wait_for(client.connect(), timeout=10)
-            if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
-                raise RuntimeError("Session is not authorized")
-            entity = await self._resolve_customer_entity(client, customer)
-            await self._send_read_acknowledge(client, entity)
-            content, image_path, telegram_message_id = await self._send_reply_payload(client, entity, text, material)
-            return content, image_path, telegram_message_id
-        finally:
-            if owns_client and client.is_connected():
-                await client.disconnect()
-            if owns_client:
-                await incoming_message_listener.resume_session(session.id)
-            incoming_message_listener.release_client_operation(session.id)
+        material_payload = None
+        if material:
+            material_payload = {
+                "name": material.name, "material_type": material.material_type,
+                "content": material.content, "file_path": material.file_path,
+                "contact_card": self._load_contact_card(material.content) if material.material_type == "contact" else None,
+            }
+        result = await session_command_bus.execute(session.id, "reply", {
+            "tg_id": customer.tg_id, "access_hash": customer.access_hash,
+            "username": customer.username, "phone_number": customer.phone_number,
+            "text": text, "material": material_payload,
+        }, timeout=75)
+        return str(result.get("content") or ""), result.get("image_path"), result.get("telegram_message_id")
 
     async def _acknowledge_customer_read(self, session: TelegramSession, customer: Customer, proxy_url: str | None) -> None:
-        from app.services.incoming_listener import incoming_message_listener
-
-        await incoming_message_listener.acquire_client_operation(session.id)
-        client = incoming_message_listener.get_connected_client(session.id)
-        owns_client = client is None
-        if owns_client:
-            if await redis_client.exists(f"marketing:session_lock:{session.id}"):
-                incoming_message_listener.release_client_operation(session.id)
-                return
-            await incoming_message_listener.pause_session(session.id)
-            client = build_client(session.session_name, proxy_url)
         try:
-            if owns_client:
-                await asyncio.wait_for(client.connect(), timeout=10)
-            if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
-                return
-            entity = await self._resolve_customer_entity(client, customer)
-            await self._send_read_acknowledge(client, entity)
+            await session_command_bus.execute(session.id, "ack_read", {
+                "tg_id": customer.tg_id, "access_hash": customer.access_hash,
+                "username": customer.username, "phone_number": customer.phone_number,
+            }, timeout=20)
         except Exception:
             return
-        finally:
-            if owns_client and client.is_connected():
-                await client.disconnect()
-            if owns_client:
-                await incoming_message_listener.resume_session(session.id)
-            incoming_message_listener.release_client_operation(session.id)
 
     async def _send_read_acknowledge(self, client: Any, entity: Any) -> None:
         try:

@@ -111,7 +111,7 @@ export default function Messages() {
     initialPageParam: null,
     getNextPageParam: (lastPage) => lastPage.has_more ? lastPage.next_before_id : undefined,
     enabled: Boolean(selectedCustomer?.id),
-    refetchInterval: selectedCustomer?.id ? 3000 : false,
+    refetchInterval: (query) => selectedCustomer?.id && query.state.fetchStatus !== 'fetching' ? 10000 : false,
   });
   const messages = useMemo(() => {
     const seen = new Set();

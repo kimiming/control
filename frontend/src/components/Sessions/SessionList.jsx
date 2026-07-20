@@ -16,6 +16,9 @@ const statusText = {
   error: '异常',
 };
 
+const runtimeColor = { online: 'green', offline: 'default', connecting: 'blue', backoff: 'orange', error: 'red' };
+const runtimeText = { online: '真实在线', offline: '实际离线', connecting: '正在连接', backoff: '重连等待', error: '运行异常' };
+
 const bidirectionalColor = {
   unchecked: 'default',
   checking: 'processing',
@@ -117,6 +120,16 @@ export default function SessionList({
       dataIndex: 'status',
       width: 120,
       render: (value) => <Tag color={statusColor[value]}>{statusText[value] || value || '-'}</Tag>,
+    },
+    {
+      title: '实时状态',
+      dataIndex: 'runtime_status',
+      width: 130,
+      render: (value = 'offline', record) => (
+        <Tooltip title={record.runtime_last_heartbeat ? `Worker ${record.runtime_worker}，心跳：${dayjs(record.runtime_last_heartbeat).format('YYYY-MM-DD HH:mm:ss')}` : '当前没有Session Worker心跳'}>
+          <Tag color={runtimeColor[value] || 'default'}>{runtimeText[value] || value}</Tag>
+        </Tooltip>
+      ),
     },
     {
       title: '双向号状态',

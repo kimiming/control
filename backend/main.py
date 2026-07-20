@@ -7,8 +7,6 @@ from app.core.config import get_settings
 from app.core.database import Base, engine
 from app.core.migrations import run_lightweight_migrations
 from app.models import Customer, CustomerProfile, MarketingTask, Material, MaterialGroup, Message, ProxyConfig, SessionGroup, SessionLog, SessionTaskLog, SupportAgent, TaskOutbox, TaskTarget, TelegramSession, User
-from app.services.incoming_listener import incoming_message_listener
-from app.services.task_queue import task_queue
 
 settings = get_settings()
 
@@ -40,14 +38,11 @@ app.include_router(sessions.ws_router)
 async def startup() -> None:
     Base.metadata.create_all(bind=engine)
     run_lightweight_migrations()
-    incoming_message_listener.start()
-    await task_queue.start()
 
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
-    await task_queue.stop()
-    await incoming_message_listener.stop()
+    pass
 
 
 @app.get("/health")

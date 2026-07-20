@@ -12,7 +12,6 @@ from telethon.tl.functions.messages import SendMediaRequest
 from telethon.tl.functions.contacts import GetContactsRequest, ImportContactsRequest
 from telethon.tl.types import InputMediaContact, InputPeerUser, InputPhoneContact
 
-from app.core.telegram import build_client
 from app.models.customer import Customer
 from app.models.customer_profile import CustomerProfile
 from app.models.session import SessionStatus, SessionTaskLog, TelegramSession
@@ -25,6 +24,10 @@ from app.services.image_storage import save_compressed_image
 from app.services.material_service import material_service
 from app.services.proxy_service import proxy_service
 from app.services.target_parser import normalize_username, parse_targets, validate_target_type
+
+
+class SessionClientUnavailable(RuntimeError):
+    """The listener-owned client is temporarily offline; the queue may retry safely."""
 
 
 class TaskService:
@@ -273,6 +276,7 @@ class TaskService:
         db: Session,
         task_id: int,
         owner_id: int | None = None,
+        online_session_ids: set[int] | None = None,
     ) -> tuple[MarketingTask, list[int]]:
         """Persist unique target assignments and return one durable job per Session."""
         task = self.get_task(db, task_id, owner_id)
@@ -294,14 +298,26 @@ class TaskService:
             queued_group_materials = []
             queued_concat_groups = []
 
-        session_stmt = select(TelegramSession).where(TelegramSession.status == SessionStatus.connected)
+        # A task owns the Session lifecycle: select enough accounts for the
+        # complete target set and let TaskQueue wake them in a bounded window.
+        # Already-online accounts are preferred, but manual pre-connection is
+        # no longer required.
+        session_stmt = select(TelegramSession)
         if owner_id is not None:
             session_stmt = session_stmt.where(TelegramSession.owner_id == owner_id)
         if task.session_group_id:
             session_stmt = session_stmt.where(TelegramSession.group_id == task.session_group_id)
-        sessions = list(db.scalars(session_stmt.order_by(TelegramSession.created_at.asc(), TelegramSession.id.asc())).all())
+        if online_session_ids:
+            session_stmt = session_stmt.order_by(
+                case((TelegramSession.id.in_(online_session_ids), 0), else_=1),
+                TelegramSession.created_at.asc(),
+                TelegramSession.id.asc(),
+            )
+        else:
+            session_stmt = session_stmt.order_by(TelegramSession.created_at.asc(), TelegramSession.id.asc())
+        sessions = list(db.scalars(session_stmt).all())
         if not sessions:
-            raise ValueError("No connected sessions in selected group")
+            raise ValueError("所选分组没有可用于任务的 Session")
 
         db.execute(delete(TaskTarget).where(TaskTarget.task_id == task.id, TaskTarget.status.in_(["unassigned", "cancelled"])))
         db.flush()
@@ -389,8 +405,31 @@ class TaskService:
             raise ValueError("Only paused tasks can be resumed")
         session_ids = self._queued_session_ids(db, task.id)
         if not session_ids:
-            raise ValueError("Task has no queued Session jobs")
+            # `unassigned` means the target was definitely not sent (for
+            # example, its Session disconnected before the Telegram call).
+            # A paused task should be resumable once that Session is connected
+            # again; failed/uncertain targets remain excluded to avoid a
+            # possible duplicate delivery.
+            retryable_session_ids = list(db.scalars(select(TaskTarget.session_id).where(
+                TaskTarget.task_id == task.id,
+                TaskTarget.status == "unassigned",
+                TaskTarget.session_id.is_not(None),
+            ).distinct()).all())
+            session_ids = [int(value) for value in retryable_session_ids]
+            if not session_ids:
+                raise ValueError("任务没有排队中或可安全重试的 Session 作业")
+            db.execute(update(TaskTarget).where(
+                TaskTarget.task_id == task.id,
+                TaskTarget.session_id.in_(session_ids),
+                TaskTarget.status == "unassigned",
+            ).values(
+                status="queued",
+                error_message=None,
+                started_at=None,
+                finished_at=None,
+            ))
         task.status = "queued"
+        task.error_message = None
         self._add_outbox(db, task.id, session_ids, "resume")
         db.commit()
         db.refresh(task)
@@ -570,7 +609,6 @@ class TaskService:
 
         db = SessionLocal()
         client: Any | None = None
-        owns_client = False
         operation_acquired = False
         try:
             task = db.get(MarketingTask, task_id)
@@ -583,12 +621,18 @@ class TaskService:
                         TaskTarget.task_id == task_id,
                         TaskTarget.session_id == session_id,
                         TaskTarget.status.in_(["queued", "processing"]),
-                    ).order_by(TaskTarget.id.asc())
+                    ).order_by(TaskTarget.id.asc()).limit(1)
                 ).all()
             )
             if not targets:
                 await self._finish_background_task(db, task)
                 return
+
+            # ORM instances are expired by commit and detached by close below.
+            # Keep primitive identifiers for the network-only part of the job.
+            # Reading even a primary key from an expired, detached instance can
+            # raise DetachedInstanceError with SQLAlchemy's default settings.
+            target_ids = [item.id for item in targets]
 
             if task.status in {"paused", "cancelling", "cancelled"}:
                 await self._finish_background_task(db, task)
@@ -605,57 +649,99 @@ class TaskService:
                 await self._finish_background_task(db, task)
                 return
 
-            await incoming_message_listener.acquire_client_operation(session.id)
+            db.close()
+            await incoming_message_listener.acquire_client_operation(session_id)
             operation_acquired = True
-            client = incoming_message_listener.get_connected_client(session.id)
+            client = await incoming_message_listener.wait_for_connected_client(session_id)
             if client is None:
-                await incoming_message_listener.pause_session(session.id)
-                client = build_client(session.session_name, proxy_service.get_proxy_url_for_session(db, session))
-                owns_client = True
-                await asyncio.wait_for(client.connect(), timeout=10)
-                if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
-                    raise RuntimeError("Session is not authorized")
-            elif not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
+                raise SessionClientUnavailable(f"Session {session_id} listener client is not connected")
+            if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
                 raise RuntimeError("Session is not authorized")
 
-            for item_index, item in enumerate(targets):
+            # Contact discovery is a Telegram network request. Fetch it without a
+            # checked-out SQLAlchemy connection, then persist the assignment in a
+            # separate short transaction.
+            db = SessionLocal()
+            contact_task = db.get(MarketingTask, task_id)
+            needs_contact_assignment = bool(contact_task and (contact_task.target_source or "imported") == "contacts")
+            db.close()
+            if needs_contact_assignment:
+                contact_result = await asyncio.wait_for(client(GetContactsRequest(hash=0)), timeout=30)
+                db = SessionLocal()
+                contact_task = db.get(MarketingTask, task_id)
+                contact_session = db.get(TelegramSession, session_id)
+                contact_targets = list(db.scalars(select(TaskTarget).where(
+                    TaskTarget.task_id == task_id,
+                    TaskTarget.session_id == session_id,
+                    TaskTarget.status.in_(["queued", "processing"]),
+                )).all())
+                if contact_task and contact_session:
+                    await self._assign_contact_targets(
+                        db, client, contact_task, contact_session, contact_targets, result=contact_result,
+                    )
+                db.close()
+
+            for item_index, target_id in enumerate(target_ids):
+                db = SessionLocal()
+                task = db.get(MarketingTask, task_id)
+                item = db.get(TaskTarget, target_id)
+                session = db.get(TelegramSession, session_id)
+                if not task or not item or not session:
+                    db.close()
+                    break
                 db.refresh(task)
                 db.refresh(item)
                 if task.status in {"paused", "cancelling", "cancelled"}:
+                    db.close()
                     break
                 if item.status != "queued":
+                    db.close()
                     continue
                 item.status = "processing"
                 item.started_at = datetime.utcnow()
                 item.attempt_count += 1
                 db.commit()
+                send_interval_min = task.send_interval_min or 0
+                send_interval_max = task.send_interval_max or 0
                 try:
                     payload_data = json.loads(item.payload_json) if item.payload_json else None
                     contact_data = payload_data.get("contact") if isinstance(payload_data, dict) else None
                     payloads = payload_data.get("materials") if isinstance(payload_data, dict) else payload_data
-                    if (task.target_source or "imported") == "contacts" and not contact_data:
-                        await self._assign_contact_targets(db, client, task, session, targets)
-                        db.refresh(item)
-                        payload_data = json.loads(item.payload_json) if item.payload_json else {}
-                        contact_data = payload_data.get("contact")
-                        payloads = payload_data.get("materials")
                     if (task.target_source or "imported") == "contacts" and not contact_data:
                         continue
                     display_target = contact_data.get("display") if contact_data else item.target
                     is_contact_target = (task.target_source or "imported") == "contacts"
                     delivery_target_type = "username" if is_contact_target else task.target_type
                     session_customer = None if is_contact_target else self._find_session_customer(db, display_target, task.target_type, session.id)
+                    task_snapshot = {
+                        "content": task.content,
+                        "image_path": task.image_path,
+                        "contact_card": task.contact_card,
+                        "owner_id": task.owner_id,
+                        "target_type": task.target_type,
+                        "name": task.name,
+                    }
+                    session_customer_tg_id = session_customer.tg_id if session_customer else None
+                    session_customer_access_hash = session_customer.access_hash if session_customer else None
+                    db.close()
                     sent_meta = await self._send_message_with_client(
                         client,
                         display_target,
-                        task.content,
-                        task.image_path,
-                        task.contact_card,
+                        task_snapshot["content"],
+                        task_snapshot["image_path"],
+                        task_snapshot["contact_card"],
                         delivery_target_type,
-                        contact_data.get("tg_id") if contact_data else (session_customer.tg_id if session_customer else None),
-                        contact_data.get("access_hash") if contact_data else (session_customer.access_hash if session_customer else None),
+                        contact_data.get("tg_id") if contact_data else session_customer_tg_id,
+                        contact_data.get("access_hash") if contact_data else session_customer_access_hash,
                         payloads,
                     )
+                    db = SessionLocal()
+                    task = db.get(MarketingTask, task_id)
+                    item = db.get(TaskTarget, target_id)
+                    session = db.get(TelegramSession, session_id)
+                    if not task or not item or not session:
+                        db.close()
+                        break
                     customer = customer_service.upsert_customer_from_task(
                         db=db,
                         target=display_target,
@@ -688,28 +774,61 @@ class TaskService:
                     db.execute(update(MarketingTask).where(MarketingTask.id == task.id).values(sent_count=MarketingTask.sent_count + 1))
                     db.commit()
                 except Exception as exc:
+                    db.close()
+                    db = SessionLocal()
+                    task = db.get(MarketingTask, task_id)
+                    item = db.get(TaskTarget, target_id)
+                    session = db.get(TelegramSession, session_id)
+                    if not task or not item or not session:
+                        db.close()
+                        break
                     error = self._translate_send_error(exc)
                     item.status = "failed"
                     item.error_message = error[:2000]
                     item.finished_at = datetime.utcnow()
                     self._log_session_task(db, session.id, task, item.target, "failed", f"发送失败，不换号重试：{error}")
                     db.execute(update(MarketingTask).where(MarketingTask.id == task.id).values(failed_count=MarketingTask.failed_count + 1))
+                    if client is None or not client.is_connected():
+                        session.health_status = "listener_error"
+                        session.error_message = "发送时Session连接中断"
+                        db.execute(update(TaskTarget).where(
+                            TaskTarget.task_id == task_id,
+                            TaskTarget.session_id == session_id,
+                            TaskTarget.status == "queued",
+                        ).values(status="unassigned", error_message="Session连接中断，未发送", finished_at=datetime.utcnow()))
+                        db.commit()
+                        break
                     if self._is_session_restricted_error(exc):
                         self._mark_session_restricted(db, session, error)
-                        for remaining in targets:
-                            if remaining.status == "queued":
-                                remaining.status = "unassigned"
-                                remaining.error_message = "Session受限，未尝试发送"
+                        db.execute(update(TaskTarget).where(
+                            TaskTarget.task_id == task_id,
+                            TaskTarget.session_id == session_id,
+                            TaskTarget.status == "queued",
+                        ).values(status="unassigned", error_message="Session受限，未尝试发送"))
                         db.commit()
                         break
                     db.commit()
-                if item_index < len(targets) - 1:
-                    delay = random.uniform(task.send_interval_min or 0, task.send_interval_max or 0)
+                finally:
+                    db.close()
+                if item_index < len(target_ids) - 1:
+                    delay = random.uniform(send_interval_min, send_interval_max)
                     if delay > 0:
                         await asyncio.sleep(delay)
+            db = SessionLocal()
+            task = db.get(MarketingTask, task_id)
+            if not task:
+                return
             await self._finish_background_task(db, task)
+        except SessionClientUnavailable:
+            raise
         except Exception as exc:
-            if 'task' in locals() and task:
+            # The active transaction may already have been closed before a
+            # Telegram operation failed. Reload the task into a fresh session
+            # so error state and target rollback are actually persisted.
+            db.close()
+            db = SessionLocal()
+            task = db.get(MarketingTask, task_id)
+            if task:
                 error = self._translate_send_error(exc)
                 for item in db.scalars(select(TaskTarget).where(
                     TaskTarget.task_id == task_id,
@@ -722,12 +841,6 @@ class TaskService:
                 db.commit()
                 await self._finish_background_task(db, task)
         finally:
-            if owns_client and client is not None:
-                try:
-                    if client.is_connected():
-                        await client.disconnect()
-                finally:
-                    await incoming_message_listener.resume_session(session_id)
             if operation_acquired:
                 incoming_message_listener.release_client_operation(session_id)
             db.close()
@@ -1011,20 +1124,17 @@ class TaskService:
     ) -> dict[str, Any]:
         from app.services.incoming_listener import incoming_message_listener
 
-        await incoming_message_listener.pause_session(session.id)
-        client = build_client(session.session_name, proxy_url)
+        await incoming_message_listener.acquire_client_operation(session.id)
         try:
-            await asyncio.wait_for(client.connect(), timeout=10)
-            if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
-                raise RuntimeError("Session is not authorized")
+            client = await incoming_message_listener.wait_for_connected_client(session.id)
+            if client is None:
+                raise SessionClientUnavailable(f"Session {session.id} listener client is not connected")
             return await self._send_message_with_client(
                 client, target_phone, content, image_path, contact_card, target_type,
                 target_tg_id, target_access_hash, payloads,
             )
         finally:
-            if client.is_connected():
-                await client.disconnect()
-            await incoming_message_listener.resume_session(session.id)
+            incoming_message_listener.release_client_operation(session.id)
 
     async def _send_message_with_client(
         self,
@@ -1145,11 +1255,13 @@ class TaskService:
         task: MarketingTask,
         session: TelegramSession,
         target_rows: list[TaskTarget],
+        result: Any | None = None,
     ) -> None:
         unresolved = [row for row in target_rows if row.target.startswith("__contact_slot__:") and row.status in {"queued", "processing"}]
         if not unresolved:
             return
-        result = await asyncio.wait_for(client(GetContactsRequest(hash=0)), timeout=30)
+        if result is None:
+            result = await asyncio.wait_for(client(GetContactsRequest(hash=0)), timeout=30)
         users = [user for user in (getattr(result, "users", []) or []) if getattr(user, "id", None)]
         random.shuffle(users)
         used_ids = {

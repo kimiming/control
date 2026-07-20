@@ -5,23 +5,35 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette.background import BackgroundTask
 
 from app.core.auth import get_current_user
 from app.core.database import get_db
 from app.models.user import User
+from app.models.session import TelegramSession
 from app.schemas.session import GroupCreate, MoveSessions, MoveSessionsToAgent, MoveSessionsToProxy, SessionCreate, SessionIds, SessionUpdate
 from app.services.session_service import session_service
 from app.services.proxy_service import proxy_service
 from app.services.websocket_manager import session_ws_manager
+from app.core.cache import redis_client
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 ws_router = APIRouter(tags=["sessions-ws"])
 
 
+async def _serialize_with_runtime(session: Any) -> dict[str, Any]:
+    value = await redis_client.get(f"telegram:session:runtime:{session.id}")
+    try:
+        runtime = json.loads(value) if value else None
+    except json.JSONDecodeError:
+        runtime = None
+    return session_service.serialize_session(session, runtime, include_runtime=True)
+
+
 @router.get("")
-def list_sessions(
+async def list_sessions(
     group_id: int | None = None,
     kf_id: int | None = None,
     status: str | None = None,
@@ -41,12 +53,44 @@ def list_sessions(
         owner_id=user.id,
         bidirectional_status=bidirectional_status,
     )
-    return [session_service.serialize_session(item) for item in sessions]
+    values = await redis_client.mget(*[f"telegram:session:runtime:{item.id}" for item in sessions]) if sessions else []
+    runtimes = []
+    for value in values:
+        try:
+            runtimes.append(json.loads(value) if value else None)
+        except json.JSONDecodeError:
+            runtimes.append(None)
+    return [session_service.serialize_session(item, runtime, include_runtime=True) for item, runtime in zip(sessions, runtimes)]
+
+
+@router.get("/runtime")
+async def list_session_runtime(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> list[dict[str, Any]]:
+    """Return only volatile worker heartbeats for inexpensive UI polling."""
+    session_ids = list(db.scalars(select(TelegramSession.id).where(TelegramSession.owner_id == user.id)).all())
+    if not session_ids:
+        return []
+    values = await redis_client.mget(*[f"telegram:session:runtime:{session_id}" for session_id in session_ids])
+    result: list[dict[str, Any]] = []
+    for session_id, value in zip(session_ids, values):
+        try:
+            runtime = json.loads(value) if value else {}
+        except json.JSONDecodeError:
+            runtime = {}
+        result.append({
+            "id": int(session_id),
+            "runtime_status": runtime.get("status", "offline"),
+            "runtime_worker": runtime.get("worker"),
+            "runtime_last_heartbeat": runtime.get("last_heartbeat"),
+        })
+    return result
 
 
 @router.post("")
-def create_session(payload: SessionCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
-    return session_service.serialize_session(session_service.create_session(db, payload.model_dump(), user.id))
+async def create_session(payload: SessionCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    return await _serialize_with_runtime(session_service.create_session(db, payload.model_dump(), user.id))
 
 
 @router.put("/{session_id}")
@@ -55,7 +99,7 @@ async def update_session(session_id: int, payload: SessionUpdate, db: Session = 
         session = await session_service.update_session(db, session_id, payload.model_dump(exclude_unset=True), user.id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return session_service.serialize_session(session)
+    return await _serialize_with_runtime(session)
 
 
 @router.delete("/{session_id}")
@@ -214,7 +258,7 @@ async def scan_contacts(session_id: int, db: Session = Depends(get_db), user: Us
         session = await session_service.scan_contacts(db, session_id, user.id)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return session_service.serialize_session(session)
+    return await _serialize_with_runtime(session)
 
 
 @router.post("/{session_id}/contacts/clear")
@@ -223,7 +267,7 @@ async def clear_contacts(session_id: int, db: Session = Depends(get_db), user: U
         session = await session_service.clear_contacts(db, session_id, user.id)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return session_service.serialize_session(session)
+    return await _serialize_with_runtime(session)
 
 
 @router.post("/{session_id}/contacts/import")
@@ -248,8 +292,9 @@ async def bidirectional_check(session_id: int, db: Session = Depends(get_db), us
     try:
         session = await session_service.check_bidirectional_status(db, session_id, user.id)
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return session_service.serialize_session(session)
+        status_code = 404 if str(exc) == "Session not found" else 400
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+    return await _serialize_with_runtime(session)
 
 
 @router.get("/logs")

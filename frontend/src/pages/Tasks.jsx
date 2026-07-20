@@ -110,7 +110,8 @@ export default function Tasks() {
     queryFn: getTasks,
     refetchInterval: (query) => {
       const rows = query.state.data || [];
-      return rows.some((item) => ['queued', 'running', 'cancelling'].includes(item.status)) || executingTaskIds.size ? 2000 : false;
+      return (rows.some((item) => ['queued', 'running', 'cancelling'].includes(item.status)) || executingTaskIds.size)
+        && query.state.fetchStatus !== 'fetching' ? 10000 : false;
     },
   });
   const { data: groups = [] } = useQuery({ queryKey: ['session-groups'], queryFn: getGroups });
@@ -124,19 +125,20 @@ export default function Tasks() {
     queryKey: ['task-logs', logTask?.id, logPage, logPageSize, logStatus, logKeyword],
     queryFn: () => getTaskLogs(logTask.id, { page: logPage, page_size: logPageSize, status: logStatus, keyword: logKeyword || undefined }),
     enabled: Boolean(logTask?.id),
-    refetchInterval: ['queued', 'running', 'cancelling'].includes(logTask?.status) ? 3000 : false,
+    refetchInterval: (query) => ['queued', 'running', 'cancelling'].includes(logTask?.status)
+      && query.state.fetchStatus !== 'fetching' ? 10000 : false,
   });
   const { data: activeTaskSessions = [] } = useQuery({
     queryKey: ['task-active-sessions', viewing?.id],
     queryFn: () => getTaskActiveSessions(viewing.id),
     enabled: Boolean(viewing?.id),
-    refetchInterval: viewing?.id ? 3000 : false,
+    refetchInterval: (query) => viewing?.id && query.state.fetchStatus !== 'fetching' ? 10000 : false,
   });
   const { data: taskSessionJobs = [] } = useQuery({
     queryKey: ['task-session-jobs', viewing?.id],
     queryFn: () => getTaskSessionJobs(viewing.id),
     enabled: Boolean(viewing?.id),
-    refetchInterval: viewing?.id ? 5000 : false,
+    refetchInterval: (query) => viewing?.id && query.state.fetchStatus !== 'fetching' ? 10000 : false,
   });
   const contentMode = Form.useWatch('content_mode', form);
   const imageMode = Form.useWatch('image_mode', form);

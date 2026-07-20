@@ -14,6 +14,7 @@ import {
   exportSessions,
   getGroups,
   getSessionLogs,
+  getSessionRuntime,
   getSessionTaskLogs,
   getSessions,
   getSupportAgents,
@@ -165,6 +166,15 @@ export default function Sessions() {
     queryKey: ['sessions', filters],
     queryFn: () => getSessions(filters),
   });
+  const { data: sessionRuntime = [] } = useQuery({
+    queryKey: ['session-runtime'],
+    queryFn: getSessionRuntime,
+    refetchInterval: (query) => query.state.fetchStatus !== 'fetching' ? 10000 : false,
+  });
+  const sessionsWithRuntime = useMemo(() => {
+    const runtimeById = new Map(sessionRuntime.map((item) => [item.id, item]));
+    return sessions.map((session) => ({ ...session, ...(runtimeById.get(session.id) || {}) }));
+  }, [sessions, sessionRuntime]);
   const { data: groups = [] } = useQuery({ queryKey: ['session-groups'], queryFn: getGroups });
   const { data: supportAgents = [] } = useQuery({ queryKey: ['support-agents'], queryFn: getSupportAgents });
   const { data: proxies = [] } = useQuery({ queryKey: ['proxies'], queryFn: getProxies });
@@ -353,7 +363,9 @@ export default function Sessions() {
   });
 
   const bidirectionalMutation = useMutation({
-    mutationFn: (record) => checkSessionBidirectional(record.id),
+    mutationFn: (record) => {
+      return checkSessionBidirectional(record.id);
+    },
     onSuccess: (data) => {
       queryClient.setQueriesData({ queryKey: ['sessions'] }, (old = []) => (
         Array.isArray(old) ? old.map((item) => (item.id === data.id ? { ...item, ...data } : item)) : old
@@ -374,18 +386,22 @@ export default function Sessions() {
   });
 
   const batchBidirectionalMutation = useMutation({
-    mutationFn: () => checkAllSessionsBidirectional(selectedRowKeys),
+    mutationFn: () => {
+      return checkAllSessionsBidirectional(selectedRowKeys);
+    },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['sessions'] });
       setSelectedRowKeys([]);
       const text = `批量检测完成：选中 ${data.requested} 个，找到 ${data.found} 个，已检测 ${data.checked} 个，跳过 ${data.skipped} 个；正常 ${data.normal} 个，已封禁 ${data.blocked} 个，疑似双向号 ${data.restricted} 个，未识别 ${data.unknown} 个，超时 ${data.timeout} 个，未授权 ${data.unauthorized} 个，异常 ${data.error} 个`;
-      if (data.blocked || data.restricted || data.unknown || data.timeout || data.unauthorized || data.skipped || data.error) message.warning(text, 10); else message.success(text, 8);
+      Modal.info({ title: '批量双向号检测结果', content: `${text}。失败详情请查看操作日志。`, width: 680 });
     },
     onError: (error) => message.error(error?.response?.data?.detail || error.message || '批量双向号检测失败'),
   });
 
   const contactMutation = useMutation({
-    mutationFn: ({ record, action }) => action === 'scan' ? scanSessionContacts(record.id) : clearSessionContacts(record.id),
+    mutationFn: ({ record, action }) => {
+      return action === 'scan' ? scanSessionContacts(record.id) : clearSessionContacts(record.id);
+    },
     onSuccess: (data, variables) => {
       queryClient.invalidateQueries({ queryKey: ['sessions'] });
       message.success(variables.action === 'scan' ? `识别完成：通讯录好友 ${data.contact_count} 个` : '通讯录已清空');
@@ -394,11 +410,13 @@ export default function Sessions() {
   });
 
   const batchContactMutation = useMutation({
-    mutationFn: (action) => action === 'scan' ? scanBatchSessionContacts(selectedRowKeys) : clearBatchSessionContacts(selectedRowKeys),
+    mutationFn: (action) => {
+      return action === 'scan' ? scanBatchSessionContacts(selectedRowKeys) : clearBatchSessionContacts(selectedRowKeys);
+    },
     onSuccess: (data, action) => {
       queryClient.invalidateQueries({ queryKey: ['sessions'] });
       const text = `${action === 'scan' ? '批量识别' : '批量清空'}完成：成功 ${data.success} 个，失败 ${data.failed} 个`;
-      if (data.failed) message.warning(text, 8); else message.success(text);
+      Modal.info({ title: action === 'scan' ? '批量识别通讯录结果' : '批量清空通讯录结果', content: `${text}。失败详情请查看操作日志。` });
     },
     onError: (error) => message.error(error?.response?.data?.detail || error.message || '批量通讯录操作失败'),
   });
@@ -426,7 +444,7 @@ export default function Sessions() {
       }
       if (contactImportTarget?.mode === 'batch') {
         const text = `批量导入完成：分配 ${data.allocated_count} 个号码，剩余 ${data.remaining_count} 个，成功 ${data.success} 个Session，失败 ${data.failed} 个`;
-        if (data.failed) message.warning(text, 8); else message.success(text);
+        Modal.info({ title: '批量导入通讯录结果', content: `${text}。失败详情请查看操作日志。` });
       } else {
         const text = `导入完成：分配 ${data.allocated_count} 个号码，剩余 ${data.remaining_count} 个`;
         if (data.failed) message.warning(`${text}，导入失败`, 8); else message.success(text);
@@ -746,7 +764,7 @@ export default function Sessions() {
         </div>
       </div>
       <SessionList
-        sessions={sessions}
+        sessions={sessionsWithRuntime}
         loading={isLoading}
         selectedRowKeys={selectedRowKeys}
         onSelectionChange={setSelectedRowKeys}

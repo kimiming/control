@@ -39,6 +39,7 @@ def build_client(session_name: str, proxy_url: str | None = None) -> TelegramCli
         settings.telegram_api_id,
         settings.telegram_api_hash,
         proxy=build_proxy(proxy_url),
+        auto_reconnect=False,
         connection_retries=1,
         retry_delay=1,
         timeout=10,

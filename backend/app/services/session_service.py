@@ -6,26 +6,23 @@ import re
 import sqlite3
 import tempfile
 import zipfile
-from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any
 
 from fastapi import UploadFile
 from openpyxl import load_workbook
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, object_session
-from telethon import utils as telethon_utils
-from telethon.tl.functions.contacts import DeleteContactsRequest, GetContactsRequest, ImportContactsRequest
-from telethon.tl.types import InputPhoneContact
 
 from app.core.cache import redis_client
 from app.core.config import get_settings
-from app.core.telegram import build_client
+from app.core.database import SessionLocal
 from app.models.session import SessionGroup, SessionLog, SessionStatus, SessionTaskLog, TelegramSession
 from app.services.proxy_service import proxy_service
 from app.services.target_parser import parse_targets
 from app.services.websocket_manager import session_ws_manager
+from app.services.session_command_bus import session_command_bus
 
 
 settings = get_settings()
@@ -135,7 +132,8 @@ class SessionService:
         return session
 
     async def connect_session(self, db: Session, session: TelegramSession) -> TelegramSession:
-        if session.status in {SessionStatus.connected, SessionStatus.connecting}:
+        runtime_online = bool(await redis_client.exists(f"telegram:session:runtime:{session.id}"))
+        if session.status == SessionStatus.connecting or runtime_online:
             self.log(db, session.id, "connect_skipped", f"Session is already {session.status.value}")
             db.commit()
             db.refresh(session)
@@ -152,19 +150,13 @@ class SessionService:
         await self.publish_status(session, "status_changed")
 
         try:
-            client = build_client(session.session_name, proxy_service.get_proxy_url_for_session(db, session))
-            await client.connect()
-            if not await client.is_user_authorized():
-                raise RuntimeError("Telegram session is not authorized. Import or authorize the session file first.")
-
-            me = await client.get_me()
-            await self._sync_telegram_profile(client, session, me)
             session.status = SessionStatus.connected
+            db.commit()
+            result = await session_command_bus.execute(session.id, "connect", timeout=35)
             session.last_login_at = datetime.utcnow()
             session.health_status = "healthy"
             session.error_message = None
             self.log(db, session.id, "connect", "Session connected")
-            await client.disconnect()
         except Exception as exc:
             session.status = SessionStatus.error
             session.health_status = "unhealthy"
@@ -174,9 +166,6 @@ class SessionService:
         db.commit()
         db.refresh(session)
         await self.publish_status(session, "status_changed")
-        if session.status == SessionStatus.connected:
-            from app.services.incoming_listener import incoming_message_listener
-            await incoming_message_listener.resume_session(session.id)
         return session
 
     async def connect_sessions(
@@ -195,7 +184,8 @@ class SessionService:
         }
         for session in sessions:
             db.refresh(session)
-            if session.status in {SessionStatus.connected, SessionStatus.connecting}:
+            runtime_online = bool(await redis_client.exists(f"telegram:session:runtime:{session.id}"))
+            if session.status == SessionStatus.connecting or runtime_online:
                 summary["skipped"] += 1
                 self.log(db, session.id, "batch_connect_skipped", f"Session is already {session.status.value}")
                 db.commit()
@@ -215,9 +205,7 @@ class SessionService:
         self.log(db, session.id, "disconnect", "Session disconnected")
         db.commit()
         db.refresh(session)
-        from app.services.incoming_listener import incoming_message_listener
-
-        await incoming_message_listener.pause_session(session.id)
+        await session_command_bus.execute(session.id, "disconnect", timeout=20)
         await self.publish_status(session, "status_changed")
         return session
 
@@ -238,10 +226,11 @@ class SessionService:
             self.log(db, session.id, "batch_disconnect", "Session disconnected by batch operation")
         db.commit()
 
-        from app.services.incoming_listener import incoming_message_listener
-
         for session in sessions:
-            await incoming_message_listener.pause_session(session.id)
+            try:
+                await session_command_bus.execute(session.id, "disconnect", timeout=20)
+            except Exception:
+                pass
             db.refresh(session)
             await self.publish_status(session, "status_changed")
         return len(sessions)
@@ -252,6 +241,17 @@ class SessionService:
             raise ValueError("Session not found")
         if await redis_client.exists(f"marketing:session_lock:{session.id}"):
             raise ValueError("Session is busy sending a task")
+        if await redis_client.exists(f"telegram:session:owner:{session.id}"):
+            try:
+                await session_command_bus.execute(session.id, "disconnect", timeout=20)
+            except Exception as exc:
+                raise ValueError(f"无法安全释放Session Worker: {exc}") from exc
+            for _ in range(20):
+                if not await redis_client.exists(f"telegram:session:owner:{session.id}"):
+                    break
+                await asyncio.sleep(0.5)
+            if await redis_client.exists(f"telegram:session:owner:{session.id}"):
+                raise ValueError("Session Worker尚未释放文件，请稍后重试")
         session_file = Path(settings.session_dir) / f"{session.session_name}.session"
         db.delete(session)
         db.commit()
@@ -411,64 +411,36 @@ class SessionService:
         sessions = db.scalars(stmt).all()
         checked = 0
         skipped = 0
-        from app.services.incoming_listener import incoming_message_listener
-
         for session in sessions:
             if await redis_client.exists(f"marketing:session_lock:{session.id}"):
                 skipped += 1
                 continue
             checked += 1
-            await incoming_message_listener.acquire_client_operation(session.id)
-            client = incoming_message_listener.get_connected_client(session.id)
-            owns_client = client is None
-            if owns_client:
-                await incoming_message_listener.pause_session(session.id)
             try:
-                if owns_client:
-                    client = build_client(session.session_name, proxy_service.get_proxy_url_for_session(db, session))
-                    await asyncio.wait_for(client.connect(), timeout=5)
-                authorized = await asyncio.wait_for(client.is_user_authorized(), timeout=5)
-                session.status = SessionStatus.connected if authorized else SessionStatus.disconnected
-                session.health_status = "healthy" if authorized else "unauthorized"
+                await session_command_bus.execute(session.id, "health", timeout=20)
+                session.status = SessionStatus.connected
+                session.health_status = "healthy"
                 session.last_health_check_at = datetime.utcnow()
                 session.error_message = None
-                if authorized:
-                    me = await asyncio.wait_for(client.get_me(), timeout=5)
-                    await asyncio.wait_for(self._sync_telegram_profile(client, session, me), timeout=8)
-                    session.last_login_at = datetime.utcnow()
-            except asyncio.TimeoutError:
-                session.status = SessionStatus.error
-                session.health_status = "unhealthy"
-                session.error_message = "Telegram connection timed out"
-                session.last_health_check_at = datetime.utcnow()
+                session.last_login_at = datetime.utcnow()
             except Exception as exc:
                 session.status = SessionStatus.error
                 session.health_status = "unhealthy"
                 session.error_message = str(exc)
                 session.last_health_check_at = datetime.utcnow()
-            finally:
-                try:
-                    if owns_client and client and client.is_connected():
-                        await client.disconnect()
-                except Exception:
-                    pass
             self.log(db, session.id, "health_check", session.health_status or "unknown")
             db.commit()
             db.refresh(session)
             await self.publish_status(session, "status_changed")
-            if owns_client:
-                await incoming_message_listener.resume_session(session.id)
-            incoming_message_listener.release_client_operation(session.id)
         return {"checked": checked, "skipped": skipped}
 
     async def check_bidirectional_status(self, db: Session, session_id: int, owner_id: int | None = None) -> TelegramSession:
         session = db.get(TelegramSession, session_id)
         if not session or (owner_id is not None and session.owner_id != owner_id):
             raise ValueError("Session not found")
+        await self._require_runtime_online(db, session)
         if await redis_client.exists(f"marketing:session_lock:{session.id}"):
             raise ValueError("Session is busy sending a task")
-
-        from app.services.incoming_listener import incoming_message_listener
 
         session.bidirectional_status = "checking"
         session.bidirectional_detail = None
@@ -476,38 +448,14 @@ class SessionService:
         db.refresh(session)
         await self.publish_status(session, "bidirectional_checking")
 
-        await incoming_message_listener.acquire_client_operation(session.id)
-        client = incoming_message_listener.get_connected_client(session.id)
-        owns_client = client is None
-        if owns_client:
-            await incoming_message_listener.pause_session(session.id)
         try:
-            if owns_client:
-                client = build_client(session.session_name, proxy_service.get_proxy_url_for_session(db, session))
-                await asyncio.wait_for(client.connect(), timeout=10)
-            if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
-                session.bidirectional_status = "unauthorized"
-                session.bidirectional_detail = "Telegram Session 未授权，无法联系 @SpamBot。"
-            else:
-                sent_message = await asyncio.wait_for(client.send_message("@SpamBot", "/start"), timeout=10)
-                response_text = await self._await_spam_bot_reply(client, sent_message.id, getattr(sent_message, "date", None))
-                session.bidirectional_detail = response_text[:10000]
-                session.bidirectional_status = self._classify_bidirectional_response(response_text)
-        except asyncio.TimeoutError:
-            session.bidirectional_status = "timeout"
-            session.bidirectional_detail = "检测超时：@SpamBot 在 10 秒内没有回应，或 Telegram 连接超时。"
+            result = await session_command_bus.execute(session.id, "bidirectional_check", timeout=30)
+            response_text = str(result.get("response") or "")
+            session.bidirectional_detail = response_text[:10000]
+            session.bidirectional_status = self._classify_bidirectional_response(response_text) if response_text else "timeout"
         except Exception as exc:
             session.bidirectional_status = "error"
             session.bidirectional_detail = str(exc)[:10000]
-        finally:
-            try:
-                if owns_client and client and client.is_connected():
-                    await client.disconnect()
-            except Exception:
-                pass
-            if owns_client:
-                await incoming_message_listener.resume_session(session.id)
-            incoming_message_listener.release_client_operation(session.id)
 
         session.last_bidirectional_check_at = datetime.utcnow()
         self.log(
@@ -529,6 +477,7 @@ class SessionService:
     ) -> dict[str, int]:
         unique_ids = list(dict.fromkeys(session_ids))
         sessions = self.get_sessions_by_ids(db, unique_ids, owner_id)
+        connection_errors = await self._auto_connect_sessions([session.id for session in sessions], owner_id)
         found_ids = {session.id for session in sessions}
         summary = {
             "requested": len(unique_ids),
@@ -544,6 +493,12 @@ class SessionService:
             "error": 0,
         }
         for session in sessions:
+            if session.id in connection_errors:
+                summary["error"] += 1
+                summary["skipped"] += 1
+                self.log(db, session.id, "bidirectional_check_failed", connection_errors[session.id])
+                db.commit()
+                continue
             try:
                 result = await self.check_bidirectional_status(db, session.id, owner_id)
                 if result.bidirectional_status in {"restricted", "unknown"}:
@@ -557,41 +512,11 @@ class SessionService:
                 summary["skipped"] += 1
         return summary
 
-    @asynccontextmanager
-    async def _managed_contact_client(self, db: Session, session: TelegramSession) -> AsyncIterator[Any]:
-        if session.status != SessionStatus.connected:
-            raise ValueError("Session is not connected")
-        if await redis_client.exists(f"marketing:session_lock:{session.id}"):
-            raise ValueError("Session is busy sending a task")
-        from app.services.incoming_listener import incoming_message_listener
-
-        await incoming_message_listener.acquire_client_operation(session.id)
-        client = None
-        owns_client = False
-        try:
-            client = incoming_message_listener.get_connected_client(session.id)
-            owns_client = client is None
-            if owns_client:
-                await incoming_message_listener.pause_session(session.id)
-                client = build_client(session.session_name, proxy_service.get_proxy_url_for_session(db, session))
-                await asyncio.wait_for(client.connect(), timeout=10)
-            if not await asyncio.wait_for(client.is_user_authorized(), timeout=10):
-                raise ValueError("Session is not authorized")
-            yield client
-        finally:
-            try:
-                if owns_client and client and client.is_connected():
-                    await client.disconnect()
-            finally:
-                if owns_client:
-                    await incoming_message_listener.resume_session(session.id)
-                incoming_message_listener.release_client_operation(session.id)
-
     async def scan_contacts(self, db: Session, session_id: int, owner_id: int | None = None) -> TelegramSession:
         session = self._owned_session(db, session_id, owner_id)
-        async with self._managed_contact_client(db, session) as client:
-            contacts = await asyncio.wait_for(client(GetContactsRequest(hash=0)), timeout=30)
-        session.contact_count = self._telegram_contact_count(contacts)
+        await self._require_runtime_online(db, session)
+        result = await session_command_bus.execute(session.id, "contacts_scan", timeout=40)
+        session.contact_count = int(result.get("contact_count", 0))
         session.contacts_scanned_at = datetime.utcnow()
         self.log(db, session.id, "contacts_scan", f"识别到 {session.contact_count} 个通讯录好友")
         db.commit()
@@ -601,16 +526,11 @@ class SessionService:
 
     async def clear_contacts(self, db: Session, session_id: int, owner_id: int | None = None) -> TelegramSession:
         session = self._owned_session(db, session_id, owner_id)
-        async with self._managed_contact_client(db, session) as client:
-            contacts = await asyncio.wait_for(client(GetContactsRequest(hash=0)), timeout=30)
-            users = getattr(contacts, "users", []) or []
-            if users:
-                input_users = [telethon_utils.get_input_user(user) for user in users]
-                for offset in range(0, len(input_users), 100):
-                    await asyncio.wait_for(client(DeleteContactsRequest(id=input_users[offset : offset + 100])), timeout=30)
+        await self._require_runtime_online(db, session)
+        result = await session_command_bus.execute(session.id, "contacts_clear", timeout=60)
         session.contact_count = 0
         session.contacts_scanned_at = datetime.utcnow()
-        self.log(db, session.id, "contacts_clear", f"已清空通讯录，共删除 {len(users)} 个好友")
+        self.log(db, session.id, "contacts_clear", f"已清空通讯录，共删除 {int(result.get('deleted', 0))} 个好友")
         db.commit()
         db.refresh(session)
         await self.publish_status(session, "contacts_updated")
@@ -624,15 +544,9 @@ class SessionService:
         owner_id: int | None = None,
     ) -> TelegramSession:
         session = self._owned_session(db, session_id, owner_id)
-        async with self._managed_contact_client(db, session) as client:
-            for offset in range(0, len(phones), 500):
-                batch = [
-                    InputPhoneContact(client_id=offset + index + 1, phone=phone, first_name=phone, last_name="")
-                    for index, phone in enumerate(phones[offset : offset + 500])
-                ]
-                await asyncio.wait_for(client(ImportContactsRequest(batch)), timeout=60)
-            contacts = await asyncio.wait_for(client(GetContactsRequest(hash=0)), timeout=30)
-        session.contact_count = self._telegram_contact_count(contacts)
+        await self._require_runtime_online(db, session)
+        result = await session_command_bus.execute(session.id, "contacts_import", {"phones": phones}, timeout=120)
+        session.contact_count = int(result.get("contact_count", 0))
         session.contacts_scanned_at = datetime.utcnow()
         self.log(db, session.id, "contacts_import", f"导入 {len(phones)} 个号码，当前通讯录好友 {session.contact_count} 个")
         db.commit()
@@ -649,6 +563,7 @@ class SessionService:
         phones: list[str] | None = None,
     ) -> dict[str, Any]:
         sessions = self.get_sessions_by_ids(db, session_ids, owner_id)
+        connection_errors = await self._auto_connect_sessions([session.id for session in sessions], owner_id)
         found_ids = {session.id for session in sessions}
         missing_ids = [session_id for session_id in dict.fromkeys(session_ids) if session_id not in found_ids]
         summary: dict[str, Any] = {
@@ -660,6 +575,13 @@ class SessionService:
             "errors": [{"session_id": session_id, "session_name": None, "error": "Session not found"} for session_id in missing_ids],
         }
         for session in sessions:
+            if session.id in connection_errors:
+                error = connection_errors[session.id]
+                summary["failed"] += 1
+                summary["errors"].append({"session_id": session.id, "session_name": session.session_name, "error": error})
+                self.log(db, session.id, f"contacts_{action}_failed", error)
+                db.commit()
+                continue
             try:
                 if action == "scan":
                     result = await self.scan_contacts(db, session.id, owner_id)
@@ -675,6 +597,8 @@ class SessionService:
                 db.rollback()
                 summary["failed"] += 1
                 summary["errors"].append({"session_id": session.id, "session_name": session.session_name, "error": str(exc)[:500]})
+                self.log(db, session.id, f"contacts_{action}_failed", str(exc)[:500])
+                db.commit()
         return summary
 
     async def distribute_import_contacts(
@@ -692,6 +616,7 @@ class SessionService:
         sessions_by_id = {
             session.id: session for session in self.get_sessions_by_ids(db, unique_ids, owner_id)
         }
+        connection_errors = await self._auto_connect_sessions(list(sessions_by_id), owner_id)
         summary: dict[str, Any] = {
             "requested": len(unique_ids),
             "found": len(sessions_by_id),
@@ -709,6 +634,13 @@ class SessionService:
             if not session:
                 summary["failed"] += 1
                 summary["errors"].append({"session_id": session_id, "session_name": None, "error": "Session not found"})
+                continue
+            if session_id in connection_errors:
+                error = connection_errors[session_id]
+                summary["failed"] += 1
+                summary["errors"].append({"session_id": session_id, "session_name": session.session_name, "error": error})
+                self.log(db, session.id, "contacts_import_failed", error)
+                db.commit()
                 continue
             assigned = phones[cursor : cursor + per_session_limit]
             if not assigned:
@@ -749,6 +681,42 @@ class SessionService:
             raise ValueError("Session not found")
         return session
 
+    async def _require_runtime_online(self, db: Session, session: TelegramSession) -> None:
+        if await redis_client.exists(f"telegram:session:runtime:{session.id}"):
+            return
+        result = await self.connect_session(db, session)
+        if result.status != SessionStatus.connected or not await redis_client.exists(f"telegram:session:runtime:{session.id}"):
+            raise ValueError(
+                f"Session {session.session_name} 自动连接失败：{result.error_message or '未建立真实在线心跳'}"
+            )
+
+    async def _auto_connect_sessions(
+        self, session_ids: list[int], owner_id: int | None,
+    ) -> dict[int, str]:
+        """Connect offline Sessions concurrently and return per-Session errors."""
+        connect_limit = asyncio.Semaphore(10)
+
+        async def connect_one(session_id: int) -> tuple[int, str | None]:
+            if await redis_client.exists(f"telegram:session:runtime:{session_id}"):
+                return session_id, None
+            local_db = SessionLocal()
+            try:
+                session = self._owned_session(local_db, session_id, owner_id)
+                async with connect_limit:
+                    result = await self.connect_session(local_db, session)
+                if result.status == SessionStatus.connected and await redis_client.exists(
+                    f"telegram:session:runtime:{session_id}"
+                ):
+                    return session_id, None
+                return session_id, result.error_message or "未建立真实在线心跳"
+            except Exception as exc:
+                return session_id, str(exc)[:500]
+            finally:
+                local_db.close()
+
+        results = await asyncio.gather(*[connect_one(session_id) for session_id in dict.fromkeys(session_ids)])
+        return {session_id: error for session_id, error in results if error}
+
     def _telegram_contact_count(self, result: Any) -> int:
         contacts = getattr(result, "contacts", None)
         if contacts is not None:
@@ -785,10 +753,12 @@ class SessionService:
         await session_ws_manager.broadcast(str(session.id), payload)
         await session_ws_manager.broadcast("*", payload)
 
-    def serialize_session(self, session: TelegramSession) -> dict[str, Any]:
+    def serialize_session(
+        self, session: TelegramSession, runtime: dict[str, Any] | None = None, include_runtime: bool = False,
+    ) -> dict[str, Any]:
         db = object_session(session)
         proxy = proxy_service.get_proxy_for_session(db, session, require_active=False) if db else None
-        return {
+        payload = {
             "id": session.id,
             "username": session.username,
             "avatar": session.avatar,
@@ -818,6 +788,13 @@ class SessionService:
             "created_at": session.created_at.isoformat() if session.created_at else None,
             "updated_at": session.updated_at.isoformat() if session.updated_at else None,
         }
+        if include_runtime:
+            payload.update({
+                "runtime_status": (runtime or {}).get("status", "offline"),
+                "runtime_worker": (runtime or {}).get("worker"),
+                "runtime_last_heartbeat": (runtime or {}).get("last_heartbeat"),
+            })
+        return payload
 
     async def _sync_telegram_profile(self, client: Any, session: TelegramSession, me: Any) -> None:
         display_name = " ".join(part for part in [getattr(me, "first_name", None), getattr(me, "last_name", None)] if part)

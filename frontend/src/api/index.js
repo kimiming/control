@@ -41,6 +41,7 @@ export const changePassword = (data) => api.post('/auth/change-password', data).
 export const getDashboardStatistics = () => api.get('/dashboard/statistics').then((res) => res.data);
 
 export const getSessions = (params) => api.get('/sessions', { params }).then((res) => res.data);
+export const getSessionRuntime = () => api.get('/sessions/runtime').then((res) => res.data);
 export const createSession = (data) => api.post('/sessions', data).then((res) => res.data);
 export const updateSession = (id, data) => api.put(`/sessions/${id}`, data).then((res) => res.data);
 export const deleteSession = (id) => api.delete(`/sessions/${id}`).then((res) => res.data);
