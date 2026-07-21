@@ -1,4 +1,6 @@
-import socket
+from urllib.parse import quote
+
+import socks
 from datetime import datetime
 from typing import Any
 
@@ -7,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.models.proxy import ProxyConfig
 from app.models.session import TelegramSession
+from app.core.telegram import build_proxy
 
 
 class ProxyService:
@@ -58,13 +61,21 @@ class ProxyService:
         proxy = db.get(ProxyConfig, proxy_id)
         if not proxy or (owner_id is not None and proxy.owner_id != owner_id):
             raise ValueError("Proxy not found")
+        sock = socks.socksocket()
+        sock.settimeout(10)
         try:
-            with socket.create_connection((proxy.host, proxy.port), timeout=5):
-                proxy.status = "reachable"
-                proxy.error_message = None
+            proxy_args = build_proxy(self._proxy_url(proxy))
+            if proxy_args is None:
+                raise ValueError("代理配置格式无效")
+            sock.set_proxy(*proxy_args)
+            sock.connect(("149.154.167.51", 443))
+            proxy.status = "reachable"
+            proxy.error_message = None
         except Exception as exc:
             proxy.status = "unreachable"
-            proxy.error_message = str(exc)
+            proxy.error_message = f"代理无法连接Telegram: {exc}"
+        finally:
+            sock.close()
         proxy.last_check_at = datetime.utcnow()
         db.commit()
         db.refresh(proxy)
@@ -124,11 +135,12 @@ class ProxyService:
             return None
         auth = ""
         if proxy.username:
-            auth = proxy.username
+            auth = quote(proxy.username, safe='')
             if proxy.password:
-                auth += f":{proxy.password}"
+                auth += f":{quote(proxy.password, safe='')}"
             auth += "@"
-        return f"{proxy.scheme}://{auth}{proxy.host}:{proxy.port}"
+        host = f"[{proxy.host}]" if ":" in proxy.host and not proxy.host.startswith("[") else proxy.host
+        return f"{proxy.scheme}://{auth}{host}:{proxy.port}"
 
     def serialize_proxy(self, proxy: ProxyConfig) -> dict[str, Any]:
         return {

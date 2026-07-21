@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     session_connect_concurrency: int = 15
     session_owner_lock_seconds: int = 90
     session_startup_history_sync: bool = False
+    session_history_sync_days: int = 2
     session_client_wait_seconds: int = 10
     inbound_stream_name: str = "telegram:incoming"
     inbound_stream_group: str = "telegram-inbound-db"
@@ -30,6 +31,7 @@ class Settings(BaseSettings):
     inbound_stream_maxlen: int = 100000
     session_command_workers: int = 5
     session_runtime_ttl_seconds: int = 60
+    enable_task_queue: bool = True
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 

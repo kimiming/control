@@ -99,7 +99,7 @@ export default function Proxies() {
     onSuccess: (proxy) => {
       queryClient.invalidateQueries({ queryKey: ['proxies'] });
       if (proxy.status === 'reachable') {
-        message.success('代理端口可连接');
+        message.success('代理认证成功，且可连接Telegram');
       } else {
         message.error(proxy.error_message || '代理不可连接');
       }

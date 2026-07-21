@@ -1,8 +1,12 @@
 import asyncio
 import signal
 
+from app.core.config import get_settings
 from app.services.incoming_listener import incoming_message_listener
 from app.services.task_queue import task_queue
+
+
+settings = get_settings()
 
 
 async def main() -> None:
@@ -12,11 +16,13 @@ async def main() -> None:
         loop.add_signal_handler(sig, stop_event.set)
 
     incoming_message_listener.start()
-    await task_queue.start()
+    if settings.enable_task_queue:
+        await task_queue.start()
     try:
         await stop_event.wait()
     finally:
-        await task_queue.stop()
+        if settings.enable_task_queue:
+            await task_queue.stop()
         await incoming_message_listener.stop()
 
 

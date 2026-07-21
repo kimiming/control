@@ -194,18 +194,29 @@ class CustomerService:
         material = material_service.get_material(db, material_id, owner_id) if material_id else None
         content, image_path, telegram_message_id = await self._send_reply(session, customer, text, material, proxy_service.get_proxy_url_for_session(db, session))
         chat_key = self._chat_key(customer)
-        db.add(
-            Message(
-                session_id=session.id,
-                chat_id=chat_key,
-                telegram_message_id=telegram_message_id,
-                sender=session.username,
-                content=content,
-                image_path=image_path,
-                direction="outbound",
-                read_status="sent",
+        existing_message = None
+        if telegram_message_id is not None:
+            existing_message = db.scalar(
+                select(Message).where(
+                    Message.session_id == session.id,
+                    Message.chat_id == chat_key,
+                    Message.direction == "outbound",
+                    Message.telegram_message_id == telegram_message_id,
+                )
             )
-        )
+        if not existing_message:
+            db.add(
+                Message(
+                    session_id=session.id,
+                    chat_id=chat_key,
+                    telegram_message_id=telegram_message_id,
+                    sender=session.username,
+                    content=content,
+                    image_path=image_path,
+                    direction="outbound",
+                    read_status="sent",
+                )
+            )
         customer.last_message_at = datetime.utcnow()
         db.commit()
         db.refresh(customer)

@@ -190,7 +190,9 @@ export default function Sessions() {
   });
 
   useEffect(() => {
-    const socket = new WebSocket(`${WS_BASE_URL}/sessions/all`);
+    const token = localStorage.getItem("auth_token");
+    if (!token) return undefined;
+    const socket = new WebSocket(`${WS_BASE_URL}/sessions/all?token=${encodeURIComponent(token)}`);
     socket.onmessage = (event) => {
       const payload = JSON.parse(event.data);
       if (payload.event === 'deleted') {

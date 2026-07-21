@@ -50,7 +50,7 @@ services:
       - ./backend/.env
     environment:
       TZ: ${TZ:-Asia/Shanghai}
-      SESSION_WORKER_COUNT: 2
+      SESSION_WORKER_COUNT: 6
     volumes:
       - telegram_sessions:/app/telegram_sessions
       - ./backend/static:/app/static
@@ -80,10 +80,12 @@ services:
       TZ: ${TZ:-Asia/Shanghai}
       APP_ROLE: session_worker
       SESSION_WORKER_INDEX: 0
-      SESSION_WORKER_COUNT: 2
+      SESSION_WORKER_COUNT: 6
       SESSION_CONNECT_CONCURRENCY: 5
-      TASK_GLOBAL_CONCURRENCY: 10
-      INBOUND_DB_WORKERS: 3
+      ENABLE_TASK_QUEUE: "false"
+      SESSION_STARTUP_HISTORY_SYNC: "true"
+      SESSION_HISTORY_SYNC_DAYS: 2
+      INBOUND_DB_WORKERS: 1
     volumes:
       - telegram_sessions:/app/telegram_sessions
       - ./backend/static:/app/static
@@ -109,10 +111,136 @@ services:
       TZ: ${TZ:-Asia/Shanghai}
       APP_ROLE: session_worker
       SESSION_WORKER_INDEX: 1
-      SESSION_WORKER_COUNT: 2
+      SESSION_WORKER_COUNT: 6
       SESSION_CONNECT_CONCURRENCY: 5
-      TASK_GLOBAL_CONCURRENCY: 10
-      INBOUND_DB_WORKERS: 2
+      ENABLE_TASK_QUEUE: "false"
+      SESSION_STARTUP_HISTORY_SYNC: "true"
+      SESSION_HISTORY_SYNC_DAYS: 2
+      INBOUND_DB_WORKERS: 1
+    volumes:
+      - telegram_sessions:/app/telegram_sessions
+      - ./backend/static:/app/static
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import os; os.kill(1, 0)\""]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  session_worker_2:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: ["python", "session_worker.py"]
+    env_file:
+      - ./backend/.env
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      APP_ROLE: session_worker
+      SESSION_WORKER_INDEX: 2
+      SESSION_WORKER_COUNT: 6
+      SESSION_CONNECT_CONCURRENCY: 5
+      ENABLE_TASK_QUEUE: "false"
+      SESSION_STARTUP_HISTORY_SYNC: "true"
+      SESSION_HISTORY_SYNC_DAYS: 2
+      INBOUND_DB_WORKERS: 1
+    volumes:
+      - telegram_sessions:/app/telegram_sessions
+      - ./backend/static:/app/static
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import os; os.kill(1, 0)\""]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  session_worker_3:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: ["python", "session_worker.py"]
+    env_file:
+      - ./backend/.env
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      APP_ROLE: session_worker
+      SESSION_WORKER_INDEX: 3
+      SESSION_WORKER_COUNT: 6
+      SESSION_CONNECT_CONCURRENCY: 5
+      ENABLE_TASK_QUEUE: "false"
+      SESSION_STARTUP_HISTORY_SYNC: "true"
+      SESSION_HISTORY_SYNC_DAYS: 2
+      INBOUND_DB_WORKERS: 1
+    volumes:
+      - telegram_sessions:/app/telegram_sessions
+      - ./backend/static:/app/static
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import os; os.kill(1, 0)\""]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  session_worker_4:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: ["python", "session_worker.py"]
+    env_file:
+      - ./backend/.env
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      APP_ROLE: session_worker
+      SESSION_WORKER_INDEX: 4
+      SESSION_WORKER_COUNT: 6
+      SESSION_CONNECT_CONCURRENCY: 5
+      ENABLE_TASK_QUEUE: "false"
+      SESSION_STARTUP_HISTORY_SYNC: "true"
+      SESSION_HISTORY_SYNC_DAYS: 2
+      INBOUND_DB_WORKERS: 1
+    volumes:
+      - telegram_sessions:/app/telegram_sessions
+      - ./backend/static:/app/static
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import os; os.kill(1, 0)\""]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  session_worker_5:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: ["python", "session_worker.py"]
+    env_file:
+      - ./backend/.env
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      APP_ROLE: session_worker
+      SESSION_WORKER_INDEX: 5
+      SESSION_WORKER_COUNT: 6
+      SESSION_CONNECT_CONCURRENCY: 5
+      ENABLE_TASK_QUEUE: "false"
+      SESSION_STARTUP_HISTORY_SYNC: "true"
+      SESSION_HISTORY_SYNC_DAYS: 2
+      INBOUND_DB_WORKERS: 1
     volumes:
       - telegram_sessions:/app/telegram_sessions
       - ./backend/static:/app/static

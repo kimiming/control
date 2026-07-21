@@ -1,5 +1,5 @@
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 import socks
 from telethon import TelegramClient
@@ -27,8 +27,8 @@ def build_proxy(proxy_url: str | None = None):
     if not proxy_type or not parsed.hostname or not parsed.port:
         return None
 
-    username = parsed.username
-    password = parsed.password
+    username = unquote(parsed.username) if parsed.username else None
+    password = unquote(parsed.password) if parsed.password else None
     return (proxy_type, parsed.hostname, parsed.port, True, username, password)
 
 
@@ -39,8 +39,8 @@ def build_client(session_name: str, proxy_url: str | None = None) -> TelegramCli
         settings.telegram_api_id,
         settings.telegram_api_hash,
         proxy=build_proxy(proxy_url),
-        auto_reconnect=False,
-        connection_retries=1,
+        auto_reconnect=True,
+        connection_retries=5,
         retry_delay=1,
         timeout=10,
     )

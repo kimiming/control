@@ -6,7 +6,7 @@ import time
 import uuid
 from pathlib import Path
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import or_, select, update
@@ -221,8 +221,10 @@ class IncomingMessageListener:
                 await self._mark_listener_error(session_id, "Session is not authorized")
                 return
 
-            @client.on(events.NewMessage(incoming=True))
+            @client.on(events.NewMessage())
             async def handler(event: Any) -> None:
+                if not event.is_private:
+                    return
                 await self._store_incoming_message(session_id, event)
 
             @client.on(events.MessageRead)
@@ -385,7 +387,9 @@ class IncomingMessageListener:
             self.release_client_operation(session_id)
 
     async def _store_incoming_message(self, session_id: int, event: Any) -> None:
-        sender_id = str(event.sender_id or "")
+        direction = "outbound" if getattr(event, "out", False) else "inbound"
+        peer_id = event.chat_id if direction == "outbound" else event.sender_id
+        sender_id = str(peer_id or "")
         if not sender_id:
             return
         content = event.raw_text or "[非文本消息]"
@@ -393,7 +397,9 @@ class IncomingMessageListener:
         telegram_message_id = self._telegram_message_id(event)
         sender_name = sender_id
         try:
-            sender = await event.get_sender()
+            sender = await (event.get_chat() if direction == "outbound" else event.get_sender())
+            if getattr(sender, "bot", False):
+                return
             sender_access_hash = getattr(sender, "access_hash", None)
             sender_username = normalize_username(getattr(sender, "username", None))
             sender_phone = getattr(sender, "phone", None)
@@ -419,6 +425,7 @@ class IncomingMessageListener:
             "created_at": created_at.isoformat(),
             "enqueued_at": datetime.utcnow().isoformat(),
             "telegram_message_id": telegram_message_id,
+            "direction": direction,
         }
         try:
             await redis_client.xadd(
@@ -440,6 +447,7 @@ class IncomingMessageListener:
         content = str(payload.get("content") or "[非文本消息]")
         created_at = datetime.fromisoformat(str(payload["created_at"]))
         telegram_message_id = payload.get("telegram_message_id")
+        direction = str(payload.get("direction") or "inbound")
 
         db = SessionLocal()
         try:
@@ -455,24 +463,34 @@ class IncomingMessageListener:
                 )
             )
             if not customer:
-                enqueued_at = datetime.fromisoformat(str(payload.get("enqueued_at") or payload["created_at"]))
-                if (datetime.utcnow() - enqueued_at).total_seconds() < 300:
-                    raise RuntimeError("Customer record is not available yet")
-                return
+                customer = Customer(
+                    owner_id=session.owner_id if session else None,
+                    assigned_session_id=session_id,
+                    tg_id=sender_id,
+                    access_hash=str(sender_access_hash) if sender_access_hash else None,
+                    username=sender_username,
+                    phone_number=str(sender_phone) if sender_phone else None,
+                    nickname=sender_name,
+                    kf_id=session.kf_id if session else None,
+                    reply_status="replied" if direction == "inbound" else "not_replied",
+                    last_message_at=created_at,
+                )
+                db.add(customer)
+                db.flush()
             customer.tg_id = customer.tg_id or sender_id
             customer.access_hash = str(sender_access_hash) if sender_access_hash else customer.access_hash
             customer.username = sender_username or customer.username
             customer.phone_number = str(sender_phone) if sender_phone else customer.phone_number
             customer.nickname = customer.nickname or sender_name
             customer.kf_id = session.kf_id if session else customer.kf_id
-            customer.reply_status = "replied"
+            customer.reply_status = "replied" if direction == "inbound" else "not_replied"
             customer.last_message_at = created_at
 
             chat_key = customer.tg_id or sender_id
             exists_stmt = select(Message.id).where(
                 Message.session_id == session_id,
                 Message.chat_id == chat_key,
-                Message.direction == "inbound",
+                Message.direction == direction,
             )
             if telegram_message_id is not None:
                 exists_stmt = exists_stmt.where(Message.telegram_message_id == telegram_message_id)
@@ -491,10 +509,10 @@ class IncomingMessageListener:
                     session_id=session_id,
                     chat_id=chat_key,
                     telegram_message_id=telegram_message_id,
-                    sender=sender_name,
+                    sender=session.username if direction == "outbound" and session else sender_name,
                     content=content,
-                    direction="inbound",
-                    read_status="unread",
+                    direction=direction,
+                    read_status="sent" if direction == "outbound" else "unread",
                     created_at=created_at,
                 )
             )
@@ -609,13 +627,19 @@ class IncomingMessageListener:
             db.close()
 
     async def _catch_up_recent_messages(self, session_id: int, client: Any) -> None:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=max(settings.session_history_sync_days, 1))
         try:
-            async for dialog in client.iter_dialogs(limit=100):
+            async for dialog in client.iter_dialogs():
                 if not getattr(dialog, "is_user", False):
                     continue
-                async for message in client.iter_messages(dialog.entity, limit=20):
-                    if getattr(message, "out", False):
-                        continue
+                if getattr(getattr(dialog, "entity", None), "bot", False):
+                    continue
+                async for message in client.iter_messages(dialog.entity):
+                    message_date = getattr(message, "date", None)
+                    if message_date is not None:
+                        normalized_date = message_date if message_date.tzinfo else message_date.replace(tzinfo=timezone.utc)
+                        if normalized_date < cutoff:
+                            break
                     await self._store_incoming_message(session_id, message)
         except Exception as exc:
             await self._mark_listener_error(session_id, f"Catch-up failed: {exc}")

@@ -9,8 +9,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette.background import BackgroundTask
 
-from app.core.auth import get_current_user
-from app.core.database import get_db
+from app.core.auth import decode_token, get_current_user
+from app.core.database import SessionLocal, get_db
 from app.models.user import User
 from app.models.session import TelegramSession
 from app.schemas.session import GroupCreate, MoveSessions, MoveSessionsToAgent, MoveSessionsToProxy, SessionCreate, SessionIds, SessionUpdate
@@ -335,6 +335,20 @@ def list_session_task_logs(session_id: int, limit: int = 100, db: Session = Depe
 
 @ws_router.websocket("/ws/sessions/{session_id}")
 async def session_websocket(websocket: WebSocket, session_id: str):
+    token = websocket.query_params.get("token")
+    if not token:
+        await websocket.close(code=1008, reason="Not authenticated")
+        return
+    try:
+        payload = decode_token(token)
+        with SessionLocal() as db:
+            user = db.get(User, int(payload["sub"]))
+            if not user or user.status != "active":
+                await websocket.close(code=1008, reason="User disabled")
+                return
+    except (HTTPException, KeyError, TypeError, ValueError):
+        await websocket.close(code=1008, reason="Invalid token")
+        return
     key = "*" if session_id in {"all", "*", "0"} else session_id
     await session_ws_manager.connect(key, websocket)
     try:
