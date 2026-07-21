@@ -192,26 +192,54 @@ export default function Sessions() {
   useEffect(() => {
     const token = localStorage.getItem("auth_token");
     if (!token) return undefined;
-    const socket = new WebSocket(`${WS_BASE_URL}/sessions/all?token=${encodeURIComponent(token)}`);
-    socket.onmessage = (event) => {
-      const payload = JSON.parse(event.data);
-      if (payload.event === 'deleted') {
-        queryClient.setQueriesData({ queryKey: ['sessions'] }, (old = []) => (
-          Array.isArray(old) ? old.filter((item) => item.id !== payload.id) : old
-        ));
-        return;
-      }
-      if (payload.session) {
-        queryClient.setQueriesData({ queryKey: ['sessions'] }, (old = []) => {
-          if (!Array.isArray(old)) return old;
-          const exists = old.some((item) => item.id === payload.session.id);
-          if (!exists) return [payload.session, ...old];
-          return old.map((item) => (item.id === payload.session.id ? { ...item, ...payload.session } : item));
-        });
-      }
+    let socket;
+    let reconnectTimer;
+    let reconnectAttempts = 0;
+    let disposed = false;
+
+    const connect = () => {
+      if (disposed) return;
+      socket = new WebSocket(`${WS_BASE_URL}/sessions/all?token=${encodeURIComponent(token)}`);
+      socket.onopen = () => {
+        reconnectAttempts = 0;
+      };
+      socket.onmessage = (event) => {
+        let payload;
+        try {
+          payload = JSON.parse(event.data);
+        } catch {
+          return;
+        }
+        if (payload.event === 'deleted') {
+          queryClient.setQueriesData({ queryKey: ['sessions'] }, (old = []) => (
+            Array.isArray(old) ? old.filter((item) => item.id !== payload.id) : old
+          ));
+          return;
+        }
+        if (payload.session) {
+          queryClient.setQueriesData({ queryKey: ['sessions'] }, (old = []) => {
+            if (!Array.isArray(old)) return old;
+            const exists = old.some((item) => item.id === payload.session.id);
+            if (!exists) return [payload.session, ...old];
+            return old.map((item) => (item.id === payload.session.id ? { ...item, ...payload.session } : item));
+          });
+        }
+      };
+      socket.onclose = () => {
+        if (disposed) return;
+        queryClient.invalidateQueries({ queryKey: ['sessions'] });
+        const delay = Math.min(1000 * (2 ** reconnectAttempts), 30000);
+        reconnectAttempts += 1;
+        reconnectTimer = window.setTimeout(connect, delay);
+      };
     };
-    socket.onclose = () => setTimeout(() => queryClient.invalidateQueries({ queryKey: ['sessions'] }), 1000);
-    return () => socket.close();
+
+    connect();
+    return () => {
+      disposed = true;
+      window.clearTimeout(reconnectTimer);
+      socket?.close();
+    };
   }, [queryClient]);
 
   const saveMutation = useMutation({
