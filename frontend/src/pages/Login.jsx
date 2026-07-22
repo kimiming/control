@@ -2,19 +2,20 @@ import { LockOutlined, UserOutlined } from '@ant-design/icons';
 import { Button, Card, Form, Input, Typography, message } from 'antd';
 import { Navigate, useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext.jsx';
+import { firstAccessiblePath } from '../components/Layout/menuItems.jsx';
 
 export default function Login() {
   const navigate = useNavigate();
   const auth = useAuth();
 
   if (auth.token && auth.user) {
-    return <Navigate to="/sessions" replace />;
+    return <Navigate to={firstAccessiblePath(auth.user)} replace />;
   }
 
   const submit = async (values) => {
     try {
-      await auth.login(values);
-      navigate('/sessions', { replace: true });
+      const user = await auth.login(values);
+      navigate(firstAccessiblePath(user), { replace: true });
     } catch (error) {
       message.error(error?.response?.data?.detail || error.message);
     }

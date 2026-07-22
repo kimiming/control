@@ -5,6 +5,7 @@ import os
 import re
 import sqlite3
 import tempfile
+import uuid
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -31,6 +32,14 @@ settings = get_settings()
 
 
 class SessionService:
+    _CONNECT_QUEUE_LOCK_SECONDS = 180
+
+    def __init__(self) -> None:
+        # Keep strong references until completion; otherwise fire-and-forget
+        # asyncio tasks may be garbage-collected while a batch is running.
+        self._connect_tasks: set[asyncio.Task[Any]] = set()
+        self._connect_semaphore = asyncio.Semaphore(max(settings.session_worker_count, 12))
+
     _SPAM_BOT_NORMAL_MARKERS = (
         "good news",
         "no limits",
@@ -154,9 +163,15 @@ class SessionService:
             await self.publish_status(session, "updated")
         return session
 
-    async def connect_session(self, db: Session, session: TelegramSession) -> TelegramSession:
+    async def connect_session(
+        self,
+        db: Session,
+        session: TelegramSession,
+        *,
+        already_queued: bool = False,
+    ) -> TelegramSession:
         runtime_online = bool(await redis_client.exists(f"telegram:session:runtime:{session.id}"))
-        if session.status == SessionStatus.connecting or runtime_online:
+        if (session.status == SessionStatus.connecting and not already_queued) or runtime_online:
             self.log(db, session.id, "connect_skipped", f"Session is already {session.status.value}")
             db.commit()
             db.refresh(session)
@@ -173,9 +188,8 @@ class SessionService:
         await self.publish_status(session, "status_changed")
 
         try:
+            await session_command_bus.execute(session.id, "connect", timeout=60)
             session.status = SessionStatus.connected
-            db.commit()
-            result = await session_command_bus.execute(session.id, "connect", timeout=35)
             session.last_login_at = datetime.utcnow()
             session.health_status = "healthy"
             session.error_message = None
@@ -196,29 +210,79 @@ class SessionService:
         db: Session,
         session_ids: list[int],
         owner_id: int | None = None,
-    ) -> dict[str, int]:
+    ) -> dict[str, Any]:
         sessions = self.get_sessions_by_ids(db, session_ids, owner_id)
         summary = {
             "requested": len(dict.fromkeys(session_ids)),
             "found": len(sessions),
-            "connected": 0,
+            "accepted": 0,
+            "accepted_ids": [],
             "skipped": 0,
-            "failed": 0,
         }
         for session in sessions:
             db.refresh(session)
             runtime_online = bool(await redis_client.exists(f"telegram:session:runtime:{session.id}"))
-            if session.status == SessionStatus.connecting or runtime_online:
+            lock_key = f"telegram:session:connect-pending:{session.id}"
+            lock_token = uuid.uuid4().hex
+            acquired = await redis_client.set(
+                lock_key,
+                lock_token,
+                nx=True,
+                ex=self._CONNECT_QUEUE_LOCK_SECONDS,
+            )
+            if session.status == SessionStatus.connecting or runtime_online or not acquired:
+                if acquired:
+                    await self._release_connect_queue_lock(lock_key, lock_token)
                 summary["skipped"] += 1
                 self.log(db, session.id, "batch_connect_skipped", f"Session is already {session.status.value}")
                 db.commit()
                 continue
-            result = await self.connect_session(db, session)
-            if result.status == SessionStatus.connected:
-                summary["connected"] += 1
-            else:
-                summary["failed"] += 1
+
+            if await redis_client.exists(f"marketing:session_lock:{session.id}"):
+                await self._release_connect_queue_lock(lock_key, lock_token)
+                summary["skipped"] += 1
+                self.log(db, session.id, "batch_connect_skipped", "Session is busy sending a task")
+                db.commit()
+                continue
+
+            session.status = SessionStatus.connecting
+            session.error_message = None
+            self.log(db, session.id, "batch_connect_queued", "Session connection queued")
+            db.commit()
+            db.refresh(session)
+            await self.publish_status(session, "status_changed")
+
+            task = asyncio.create_task(
+                self._run_queued_connect(session.id, lock_key, lock_token),
+                name=f"connect-session-{session.id}",
+            )
+            self._connect_tasks.add(task)
+            task.add_done_callback(self._connect_tasks.discard)
+            summary["accepted"] += 1
+            summary["accepted_ids"].append(session.id)
         return summary
+
+    async def _run_queued_connect(self, session_id: int, lock_key: str, lock_token: str) -> None:
+        try:
+            async with self._connect_semaphore:
+                db = SessionLocal()
+                try:
+                    session = db.get(TelegramSession, session_id)
+                    if session and session.status == SessionStatus.connecting:
+                        await self.connect_session(db, session, already_queued=True)
+                finally:
+                    db.close()
+        finally:
+            await self._release_connect_queue_lock(lock_key, lock_token)
+
+    async def _release_connect_queue_lock(self, key: str, token: str) -> None:
+        await redis_client.eval(
+            "if redis.call('get', KEYS[1]) == ARGV[1] then "
+            "return redis.call('del', KEYS[1]) else return 0 end",
+            1,
+            key,
+            token,
+        )
 
     async def disconnect_session(self, db: Session, session: TelegramSession) -> TelegramSession:
         if await redis_client.exists(f"marketing:session_lock:{session.id}"):

@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.core.auth import get_current_user
+from app.core.auth import get_current_user, require_any_menu_access
 from app.core.database import get_db
 from app.models.user import User
 from app.services.proxy_service import proxy_service
@@ -22,7 +22,7 @@ class ProxyPayload(BaseModel):
     group_ids: list[int] | None = None
 
 
-router = APIRouter(prefix="/proxies", tags=["proxies"])
+router = APIRouter(prefix="/proxies", tags=["proxies"], dependencies=[Depends(require_any_menu_access("proxies", "sessions"))])
 
 
 @router.get("")

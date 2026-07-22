@@ -36,6 +36,8 @@ def run_lightweight_migrations() -> None:
             "ALTER TABLE sessions ADD COLUMN contacts_scanned_at DATETIME NULL",
             "ALTER TABLE tasks ADD COLUMN send_interval_min INTEGER NOT NULL DEFAULT 3",
             "ALTER TABLE tasks ADD COLUMN send_interval_max INTEGER NOT NULL DEFAULT 5",
+            "ALTER TABLE users ADD COLUMN menu_permissions TEXT NULL",
+            "UPDATE users SET menu_permissions = '[\"messages\",\"materials\"]' WHERE menu_permissions IS NULL",
         ]
         with engine.begin() as connection:
             for statement in statements:
@@ -152,6 +154,8 @@ def run_lightweight_migrations() -> None:
         "ALTER TABLE sessions ADD COLUMN contacts_scanned_at DATETIME NULL",
         "ALTER TABLE tasks ADD COLUMN send_interval_min INT NOT NULL DEFAULT 3",
         "ALTER TABLE tasks ADD COLUMN send_interval_max INT NOT NULL DEFAULT 5",
+        "ALTER TABLE users ADD COLUMN menu_permissions TEXT NULL",
+        "UPDATE users SET menu_permissions = '[\"messages\",\"materials\"]' WHERE menu_permissions IS NULL",
     ]
     with engine.begin() as connection:
         for statement in statements:

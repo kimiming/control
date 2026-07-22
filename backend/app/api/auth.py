@@ -1,3 +1,4 @@
+import json
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -5,7 +6,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.core.auth import create_token, get_current_user, hash_password, require_root, verify_password
+from app.core.auth import DEFAULT_MENU_PERMISSIONS, MENU_PERMISSIONS, create_token, get_current_user, get_user_menu_permissions, hash_password, normalize_menu_permissions, require_root, verify_password
 from app.core.database import get_db
 from app.models.user import User
 
@@ -18,12 +19,14 @@ class LoginPayload(BaseModel):
 class UserPayload(BaseModel):
     username: str = Field(min_length=1, max_length=100)
     password: str = Field(min_length=1, max_length=100)
+    menu_permissions: list[str] = Field(default_factory=lambda: list(DEFAULT_MENU_PERMISSIONS))
 
 
 class UserUpdatePayload(BaseModel):
     username: str = Field(min_length=1, max_length=100)
     password: str | None = Field(default=None, max_length=100)
     status: str = Field(default="active", pattern="^(active|disabled)$")
+    menu_permissions: list[str] | None = None
 
 
 class PasswordPayload(BaseModel):
@@ -60,7 +63,13 @@ def create_user(payload: UserPayload, _: User = Depends(require_root), db: Sessi
     exists = db.scalar(select(User).where(User.username == payload.username))
     if exists:
         raise HTTPException(status_code=400, detail="用户名已存在")
-    user = User(username=payload.username, password_hash=hash_password(payload.password), role="user")
+    permissions = _validate_menu_permissions(payload.menu_permissions)
+    user = User(
+        username=payload.username,
+        password_hash=hash_password(payload.password),
+        role="user",
+        menu_permissions=json.dumps(permissions),
+    )
     db.add(user)
     db.commit()
     db.refresh(user)
@@ -81,6 +90,8 @@ def update_user(user_id: int, payload: UserUpdatePayload, _: User = Depends(requ
             raise HTTPException(status_code=400, detail="不能停用最后一个Root用户")
     user.username = payload.username
     user.status = payload.status
+    if user.role != "root" and payload.menu_permissions is not None:
+        user.menu_permissions = json.dumps(_validate_menu_permissions(payload.menu_permissions))
     if payload.password:
         user.password_hash = hash_password(payload.password)
     db.commit()
@@ -103,5 +114,13 @@ def serialize_user(user: User) -> dict[str, Any]:
         "username": user.username,
         "role": user.role,
         "status": user.status,
+        "menu_permissions": get_user_menu_permissions(user),
         "created_at": user.created_at.isoformat() if user.created_at else None,
     }
+
+
+def _validate_menu_permissions(value: list[str]) -> list[str]:
+    unknown = sorted(set(value) - set(MENU_PERMISSIONS))
+    if unknown:
+        raise HTTPException(status_code=422, detail=f"无效菜单权限: {', '.join(unknown)}")
+    return normalize_menu_permissions(value)

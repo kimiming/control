@@ -99,7 +99,9 @@ class IncomingMessageListener:
         db = SessionLocal()
         try:
             session = db.get(TelegramSession, session_id)
-            should_listen = bool(session and session.status == SessionStatus.connected)
+            should_listen = bool(
+                session and session.status in {SessionStatus.connecting, SessionStatus.connected}
+            )
         finally:
             db.close()
         if should_listen and session_id not in self._tasks:
@@ -162,7 +164,7 @@ class IncomingMessageListener:
         try:
             sessions = list(db.scalars(
                 select(TelegramSession)
-                .where(TelegramSession.status == SessionStatus.connected)
+                .where(TelegramSession.status.in_([SessionStatus.connecting, SessionStatus.connected]))
                 .where(TelegramSession.id % max(settings.session_worker_count, 1) == settings.session_worker_index % max(settings.session_worker_count, 1))
                 .order_by(TelegramSession.last_login_at.desc(), TelegramSession.id.asc())
             ).all())

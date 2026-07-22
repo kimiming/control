@@ -1,12 +1,12 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from app.core.auth import get_current_user
+from app.core.auth import get_current_user, require_menu_access
 from app.core.database import get_db
 from app.models.user import User
 from app.services.message_service import message_service
 
-router = APIRouter(prefix="/messages", tags=["messages"])
+router = APIRouter(prefix="/messages", tags=["messages"], dependencies=[Depends(require_menu_access("messages"))])
 
 
 @router.get("")

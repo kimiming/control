@@ -4,14 +4,14 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.auth import get_current_user
+from app.core.auth import get_current_user, require_any_menu_access
 from app.core.database import get_db
 from app.models.customer_profile import CustomerProfile
 from app.models.user import User
 from app.services.target_parser import parse_targets, validate_target_type
 
 
-router = APIRouter(prefix="/customer-profiles", tags=["customer-profiles"])
+router = APIRouter(prefix="/customer-profiles", tags=["customer-profiles"], dependencies=[Depends(require_any_menu_access("customer_profiles", "tasks"))])
 
 
 @router.get("")

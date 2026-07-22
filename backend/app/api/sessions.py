@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette.background import BackgroundTask
 
-from app.core.auth import decode_token, get_current_user
+from app.core.auth import decode_token, get_current_user, require_any_menu_access
 from app.core.database import SessionLocal, get_db
 from app.models.user import User
 from app.models.session import TelegramSession
@@ -20,7 +20,7 @@ from app.services.proxy_service import proxy_service
 from app.services.websocket_manager import session_ws_manager
 from app.core.cache import redis_client
 
-router = APIRouter(prefix="/sessions", tags=["sessions"])
+router = APIRouter(prefix="/sessions", tags=["sessions"], dependencies=[Depends(require_any_menu_access("sessions", "customers", "tasks", "proxies"))])
 ws_router = APIRouter(tags=["sessions-ws"])
 
 
@@ -106,18 +106,23 @@ async def list_session_runtime(
     user: User = Depends(get_current_user),
 ) -> list[dict[str, Any]]:
     """Return only volatile worker heartbeats for inexpensive UI polling."""
-    session_ids = list(db.scalars(select(TelegramSession.id).where(TelegramSession.owner_id == user.id)).all())
-    if not session_ids:
+    session_rows = list(db.execute(
+        select(TelegramSession.id, TelegramSession.status)
+        .where(TelegramSession.owner_id == user.id)
+    ).all())
+    if not session_rows:
         return []
+    session_ids = [int(row.id) for row in session_rows]
     values = await redis_client.mget(*[f"telegram:session:runtime:{session_id}" for session_id in session_ids])
     result: list[dict[str, Any]] = []
-    for session_id, value in zip(session_ids, values):
+    for row, value in zip(session_rows, values):
         try:
             runtime = json.loads(value) if value else {}
         except json.JSONDecodeError:
             runtime = {}
         result.append({
-            "id": int(session_id),
+            "id": int(row.id),
+            "status": row.status.value if hasattr(row.status, "value") else str(row.status),
             "runtime_status": runtime.get("status", "offline"),
             "runtime_worker": runtime.get("worker"),
             "runtime_last_heartbeat": runtime.get("last_heartbeat"),
@@ -239,7 +244,7 @@ async def disconnect_sessions(payload: SessionIds, db: Session = Depends(get_db)
 
 
 @router.post("/connect")
-async def connect_sessions(payload: SessionIds, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, int]:
+async def connect_sessions(payload: SessionIds, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
     return await session_service.connect_sessions(db, payload.session_ids, user.id)
 
 

@@ -1,5 +1,5 @@
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
-import { Spin } from 'antd';
+import { Button, Result, Spin } from 'antd';
 import { lazy, Suspense } from 'react';
 import { AuthProvider, useAuth } from './auth/AuthContext.jsx';
 import MainLayout from './components/Layout/MainLayout.jsx';
@@ -14,8 +14,20 @@ import Login from './pages/Login.jsx';
 import UsageDocs from './pages/UsageDocs.jsx';
 import Users from './pages/Users.jsx';
 import VerificationCode from './pages/VerificationCode.jsx';
+import { canAccessMenu, firstAccessiblePath, menuItems } from './components/Layout/menuItems.jsx';
 
 const Dashboard = lazy(() => import('./pages/Dashboard.jsx'));
+
+function NotFound() {
+  const auth = useAuth();
+  return <Result status="404" title="404" subTitle="页面不存在或你没有访问权限" extra={<Button type="primary" href={firstAccessiblePath(auth.user)}>返回可用页面</Button>} />;
+}
+
+function MenuRoute({ path, children }) {
+  const { user } = useAuth();
+  const item = menuItems.find((entry) => entry.key === path);
+  return canAccessMenu(user, item) ? children : <NotFound />;
+}
 
 function ProtectedApp() {
   const auth = useAuth();
@@ -25,18 +37,18 @@ function ProtectedApp() {
   return (
     <MainLayout>
       <Routes>
-        <Route path="/" element={<Navigate to="/dashboard" replace />} />
-        <Route path="/dashboard" element={<Suspense fallback={<Spin fullscreen />}><Dashboard /></Suspense>} />
-        <Route path="/sessions" element={<Sessions />} />
-        <Route path="/usage-docs" element={<UsageDocs />} />
-        <Route path="/messages" element={<Messages />} />
-        <Route path="/tasks" element={<Tasks />} />
-        <Route path="/materials" element={<Materials />} />
-        <Route path="/customers" element={<Customers />} />
-        <Route path="/customer-profiles" element={<CustomerProfiles />} />
-        <Route path="/proxies" element={<Proxies />} />
-        <Route path="/users" element={auth.user.role === 'root' ? <Users /> : <Navigate to="/dashboard" replace />} />
-        <Route path="*" element={<Navigate to="/dashboard" replace />} />
+        <Route path="/" element={<Navigate to={firstAccessiblePath(auth.user)} replace />} />
+        <Route path="/dashboard" element={<MenuRoute path="/dashboard"><Suspense fallback={<Spin fullscreen />}><Dashboard /></Suspense></MenuRoute>} />
+        <Route path="/sessions" element={<MenuRoute path="/sessions"><Sessions /></MenuRoute>} />
+        <Route path="/usage-docs" element={<MenuRoute path="/usage-docs"><UsageDocs /></MenuRoute>} />
+        <Route path="/messages" element={<MenuRoute path="/messages"><Messages /></MenuRoute>} />
+        <Route path="/tasks" element={<MenuRoute path="/tasks"><Tasks /></MenuRoute>} />
+        <Route path="/materials" element={<MenuRoute path="/materials"><Materials /></MenuRoute>} />
+        <Route path="/customers" element={<MenuRoute path="/customers"><Customers /></MenuRoute>} />
+        <Route path="/customer-profiles" element={<MenuRoute path="/customer-profiles"><CustomerProfiles /></MenuRoute>} />
+        <Route path="/proxies" element={<MenuRoute path="/proxies"><Proxies /></MenuRoute>} />
+        <Route path="/users" element={<MenuRoute path="/users"><Users /></MenuRoute>} />
+        <Route path="*" element={<NotFound />} />
       </Routes>
     </MainLayout>
   );
@@ -46,7 +58,8 @@ function ProtectedVerificationCode() {
   const auth = useAuth();
   if (auth.loading) return <Spin fullscreen />;
   if (!auth.token || !auth.user) return <Navigate to="/login" replace />;
-  return <VerificationCode />;
+  const item = menuItems.find((entry) => entry.key === '/sessions');
+  return canAccessMenu(auth.user, item) ? <VerificationCode /> : <NotFound />;
 }
 
 export default function App() {

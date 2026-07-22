@@ -1,11 +1,23 @@
 import { EditOutlined, PlusOutlined } from '@ant-design/icons';
-import { Button, Form, Input, Modal, Select, Space, Table, Tag, Tooltip, message } from 'antd';
+import { Button, Checkbox, Form, Input, Modal, Select, Space, Table, Tag, Tooltip, message } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import dayjs from 'dayjs';
 import { useState } from 'react';
 import { createUser, getUsers, updateUser } from '../api/index.js';
 
 const roleText = { root: 'Root', user: '普通用户' };
+const defaultMenuPermissions = ['messages', 'materials'];
+const menuPermissionOptions = [
+  { label: '控制面板', value: 'dashboard' },
+  { label: 'Session管理', value: 'sessions' },
+  { label: '消息列表', value: 'messages' },
+  { label: '客服管理', value: 'customers' },
+  { label: '客户资料管理', value: 'customer_profiles' },
+  { label: '素材库管理', value: 'materials' },
+  { label: '任务管理', value: 'tasks' },
+  { label: '代理管理', value: 'proxies' },
+  { label: '使用文档', value: 'usage_docs' },
+];
 
 export default function Users() {
   const queryClient = useQueryClient();
@@ -48,7 +60,7 @@ export default function Users() {
             icon={<EditOutlined />}
             onClick={() => {
               setEditing(record);
-              form.setFieldsValue({ username: record.username, password: '', status: record.status || 'active' });
+              form.setFieldsValue({ username: record.username, password: '', status: record.status || 'active', menu_permissions: record.menu_permissions || defaultMenuPermissions });
               setOpen(true);
             }}
           />
@@ -67,7 +79,7 @@ export default function Users() {
           onClick={() => {
             setEditing(null);
             form.resetFields();
-            form.setFieldsValue({ status: 'active' });
+            form.setFieldsValue({ status: 'active', menu_permissions: defaultMenuPermissions });
             setOpen(true);
           }}
         >
@@ -106,6 +118,11 @@ export default function Users() {
                   { label: '停用', value: 'disabled' },
                 ]}
               />
+            </Form.Item>
+          ) : null}
+          {editing?.role !== 'root' ? (
+            <Form.Item name="menu_permissions" label="可查看菜单">
+              <Checkbox.Group options={menuPermissionOptions} style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 10 }} />
             </Form.Item>
           ) : null}
         </Form>

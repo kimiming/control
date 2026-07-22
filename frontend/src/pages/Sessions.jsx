@@ -1,5 +1,5 @@
 import { ClearOutlined, DeleteOutlined, DisconnectOutlined, DownloadOutlined, ImportOutlined, LinkOutlined, ReloadOutlined, SafetyCertificateOutlined, SearchOutlined, TeamOutlined, UsergroupAddOutlined } from '@ant-design/icons';
-import { Button, Card, Drawer, Form, Input, InputNumber, Modal, Popconfirm, Radio, Select, Space, Spin, Table, Tag, Upload, message } from 'antd';
+import { Alert, Button, Card, Drawer, Form, Input, InputNumber, Modal, Popconfirm, Progress, Radio, Select, Space, Spin, Table, Tag, Upload, message } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import dayjs from 'dayjs';
 import { useEffect, useMemo, useState } from 'react';
@@ -166,19 +166,23 @@ export default function Sessions() {
   const [contactImportLimit, setContactImportLimit] = useState(10);
   const [batchImporting, setBatchImporting] = useState(false);
   const [manualRefreshing, setManualRefreshing] = useState(false);
+  const [batchConnectingIds, setBatchConnectingIds] = useState([]);
   const [groupForm] = Form.useForm();
 
   const { data: sessionPage, isLoading, isFetching: sessionsFetching, refetch: refreshSessions } = useQuery({
     queryKey: ['sessions', filters, pagination.current, pagination.pageSize],
     queryFn: () => getSessions({ ...filters, page: pagination.current, page_size: pagination.pageSize }),
     placeholderData: (previousData) => previousData,
+    refetchInterval: batchConnectingIds.length ? 3000 : false,
   });
   const sessions = sessionPage?.items || [];
   const sessionTotal = sessionPage?.total || 0;
   const { data: sessionRuntime = [] } = useQuery({
     queryKey: ['session-runtime'],
     queryFn: getSessionRuntime,
-    refetchInterval: (query) => query.state.fetchStatus !== 'fetching' ? 10000 : false,
+    refetchInterval: (query) => query.state.fetchStatus !== 'fetching'
+      ? (batchConnectingIds.length ? 3000 : 10000)
+      : false,
   });
   const sessionsWithRuntime = useMemo(() => {
     const runtimeById = new Map(sessionRuntime.map((item) => [item.id, item]));
@@ -193,6 +197,25 @@ export default function Sessions() {
       return { ...session, ...runtime };
     });
   }, [sessions, sessionRuntime]);
+  const batchConnectProgress = useMemo(() => {
+    const runtimeById = new Map(sessionRuntime.map((item) => [item.id, item]));
+    const total = batchConnectingIds.length;
+    let connected = 0;
+    let failed = 0;
+    batchConnectingIds.forEach((id) => {
+      const item = runtimeById.get(id);
+      if (item?.runtime_status === 'online' || item?.status === 'connected') connected += 1;
+      else if (item?.status === 'error') failed += 1;
+    });
+    const finished = connected + failed;
+    return {
+      total,
+      connected,
+      failed,
+      pending: Math.max(total - finished, 0),
+      percent: total ? Math.round((finished / total) * 100) : 0,
+    };
+  }, [batchConnectingIds, sessionRuntime]);
   const { data: groups = [] } = useQuery({ queryKey: ['session-groups'], queryFn: getGroups });
   const { data: supportAgents = [] } = useQuery({ queryKey: ['support-agents'], queryFn: getSupportAgents });
   const { data: proxies = [] } = useQuery({ queryKey: ['proxies'], queryFn: getProxies });
@@ -332,10 +355,12 @@ export default function Sessions() {
   const batchConnectMutation = useMutation({
     mutationFn: () => connectSessions(selectedRowKeys),
     onSuccess: (data) => {
-      const notice = `批量连接完成：成功 ${data.connected} 个，跳过已连接/连接中 ${data.skipped} 个，失败 ${data.failed} 个`;
-      if (data.failed) message.warning(notice, 8);
-      else message.success(notice, 6);
+      const acceptedIds = data.accepted_ids || [];
+      setBatchConnectingIds(acceptedIds);
+      const notice = `连接任务已进入后台：提交 ${data.accepted} 个，跳过已连接/连接中 ${data.skipped} 个`;
+      message.success(notice, 6);
       queryClient.invalidateQueries({ queryKey: ['sessions'] });
+      queryClient.invalidateQueries({ queryKey: ['session-runtime'] });
       setSelectedRowKeys([]);
     },
     onError: (error) => {
@@ -343,6 +368,15 @@ export default function Sessions() {
       queryClient.invalidateQueries({ queryKey: ['sessions'] });
     },
   });
+
+  useEffect(() => {
+    if (!batchConnectProgress.total || batchConnectProgress.pending) return;
+    const notice = `批量连接结束：上线 ${batchConnectProgress.connected} 个，失败 ${batchConnectProgress.failed} 个`;
+    if (batchConnectProgress.failed) message.warning(notice, 8);
+    else message.success(notice, 6);
+    setBatchConnectingIds([]);
+    queryClient.invalidateQueries({ queryKey: ['sessions'] });
+  }, [batchConnectProgress, queryClient]);
 
   const batchDisconnectMutation = useMutation({
     mutationFn: () => disconnectSessions(selectedRowKeys),
@@ -599,6 +633,15 @@ export default function Sessions() {
   return (
     <div className="page">
       <Spin fullscreen spinning={batchOperationPending} tip={batchLoadingTip} size="large" />
+      {batchConnectProgress.total > 0 && (
+        <Alert
+          showIcon
+          type={batchConnectProgress.failed ? 'warning' : 'info'}
+          message={`后台连接进度：${batchConnectProgress.connected}/${batchConnectProgress.total} 已上线，${batchConnectProgress.pending} 个处理中${batchConnectProgress.failed ? `，${batchConnectProgress.failed} 个失败` : ''}`}
+          description={<Progress percent={batchConnectProgress.percent} status={batchConnectProgress.failed ? 'exception' : 'active'} />}
+          style={{ marginBottom: 12 }}
+        />
+      )}
       <Card size="small" className="filter-card" title="搜索筛选">
         <Space wrap>
           <Input.Search
@@ -683,7 +726,7 @@ export default function Sessions() {
           <Button
             className="session-action-button--green"
             icon={<LinkOutlined />}
-            disabled={!selectedRowKeys.length || batchDisconnectMutation.isPending}
+            disabled={!selectedRowKeys.length || batchDisconnectMutation.isPending || batchConnectingIds.length > 0}
             loading={batchConnectMutation.isPending}
             onClick={() => batchConnectMutation.mutate()}
           >

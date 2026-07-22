@@ -15,6 +15,54 @@ from app.models.user import User
 
 SECRET = os.environ.get("AUTH_SECRET", "change-this-auth-secret")
 TOKEN_TTL_SECONDS = 60 * 60 * 24 * 7
+MENU_PERMISSIONS = (
+    "dashboard",
+    "sessions",
+    "messages",
+    "customers",
+    "customer_profiles",
+    "materials",
+    "tasks",
+    "proxies",
+    "usage_docs",
+)
+DEFAULT_MENU_PERMISSIONS = ("messages", "materials")
+
+
+def normalize_menu_permissions(value: Any) -> list[str]:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError):
+            value = []
+    if not isinstance(value, (list, tuple, set)):
+        return []
+    selected = set(value)
+    return [permission for permission in MENU_PERMISSIONS if permission in selected]
+
+
+def get_user_menu_permissions(user: User) -> list[str]:
+    if user.role == "root":
+        return list(MENU_PERMISSIONS)
+    return normalize_menu_permissions(user.menu_permissions)
+
+
+def require_menu_access(permission: str):
+    return require_any_menu_access(permission)
+
+
+def require_any_menu_access(*permissions: str):
+    unknown = set(permissions) - set(MENU_PERMISSIONS)
+    if unknown:
+        raise ValueError(f"Unknown menu permission: {', '.join(sorted(unknown))}")
+
+    def dependency(user: User = Depends(get_current_user)) -> User:
+        allowed = set(get_user_menu_permissions(user))
+        if user.role != "root" and not allowed.intersection(permissions):
+            raise HTTPException(status_code=404, detail="Not Found")
+        return user
+
+    return dependency
 
 
 def hash_password(password: str, salt: str | None = None) -> str:
@@ -92,7 +140,12 @@ def ensure_default_users(db: Session) -> tuple[User, User]:
         db.flush()
     test = db.scalar(select(User).where(User.username == "test"))
     if not test:
-        test = User(username="test", password_hash=hash_password("test"), role="user")
+        test = User(
+            username="test",
+            password_hash=hash_password("test"),
+            role="user",
+            menu_permissions=json.dumps(DEFAULT_MENU_PERMISSIONS),
+        )
         db.add(test)
         db.flush()
     db.commit()

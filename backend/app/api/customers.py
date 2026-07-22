@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.core.auth import get_current_user
+from app.core.auth import get_current_user, require_any_menu_access
 from app.core.database import get_db
 from app.models.user import User
 from app.services.customer_service import customer_service
@@ -19,7 +19,7 @@ class FavoritePayload(BaseModel):
     is_favorite: bool
 
 
-router = APIRouter(prefix="/customers", tags=["customers"])
+router = APIRouter(prefix="/customers", tags=["customers"], dependencies=[Depends(require_any_menu_access("customers", "messages"))])
 
 
 @router.get("")

@@ -24,7 +24,9 @@ class Settings(BaseSettings):
     session_owner_lock_seconds: int = 90
     session_startup_history_sync: bool = False
     session_history_sync_days: int = 2
-    session_client_wait_seconds: int = 10
+    # A Telegram connect + authorization handshake may legitimately take close
+    # to 40 seconds (20 seconds for each phase).
+    session_client_wait_seconds: int = 45
     inbound_stream_name: str = "telegram:incoming"
     inbound_stream_group: str = "telegram-inbound-db"
     inbound_db_workers: int = 5

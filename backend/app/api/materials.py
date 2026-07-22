@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.core.auth import get_current_user
+from app.core.auth import get_current_user, require_any_menu_access
 from app.core.database import get_db
 from app.models.user import User
 from app.services.material_service import material_service
@@ -25,7 +25,7 @@ class BatchMovePayload(BaseModel):
     group_id: int | None = None
 
 
-router = APIRouter(prefix="/materials", tags=["materials"])
+router = APIRouter(prefix="/materials", tags=["materials"], dependencies=[Depends(require_any_menu_access("materials", "messages", "tasks"))])
 
 
 @router.get("")
