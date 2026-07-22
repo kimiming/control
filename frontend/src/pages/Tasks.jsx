@@ -278,10 +278,23 @@ export default function Tasks() {
 
   const deleteMutation = useMutation({
     mutationFn: deleteTask,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['tasks'] });
+    onMutate: async (taskId) => {
+      await queryClient.cancelQueries({ queryKey: ['tasks'] });
+      const previousTasks = queryClient.getQueryData(['tasks']);
+      queryClient.setQueryData(['tasks'], (old = []) => old.filter((task) => task.id !== taskId));
+      return { previousTasks, taskId };
+    },
+    onSuccess: async (_, taskId) => {
+      if (viewing?.id === taskId) setViewing(null);
+      if (logTask?.id === taskId) setLogTask(null);
+      await queryClient.invalidateQueries({ queryKey: ['tasks'] });
       message.success('任务已删除');
     },
+    onError: (error, _, context) => {
+      if (context?.previousTasks) queryClient.setQueryData(['tasks'], context.previousTasks);
+      message.error(error?.response?.data?.detail || error.message || '任务删除失败');
+    },
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ['tasks'] }),
   });
 
   const executeMutation = useMutation({

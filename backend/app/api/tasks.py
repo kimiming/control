@@ -178,7 +178,8 @@ def delete_task(task_id: int, db: Session = Depends(get_db), user: User = Depend
     try:
         task_service.delete_task(db, task_id, user.id)
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        status_code = 404 if str(exc) == "Task not found" else 400
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
     return {"ok": True}
 
 

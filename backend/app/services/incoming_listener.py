@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import json
 import random
+import re
 import time
 import uuid
 from pathlib import Path
@@ -13,7 +14,7 @@ from sqlalchemy import or_, select, update
 from telethon import events
 from telethon import utils as telethon_utils
 from telethon.tl.functions.contacts import DeleteContactsRequest, GetContactsRequest, ImportContactsRequest
-from telethon.tl.types import InputMediaContact, InputPeerUser, InputPhoneContact
+from telethon.tl.types import InputMediaContact, InputPeerUser, InputPhoneContact, User
 from redis.exceptions import ResponseError
 
 from app.core.config import get_settings
@@ -28,6 +29,13 @@ from app.services.target_parser import normalize_username
 from app.services.session_command_bus import session_command_bus
 
 settings = get_settings()
+
+TELEGRAM_SERVICE_USER_IDS = {"333000", "777000"}
+TELEGRAM_SERVICE_PHONE_NUMBERS = {"+42777", "42777"}
+
+
+def _is_telegram_service_account(sender_id: str, phone_number: str | None = None) -> bool:
+    return sender_id in TELEGRAM_SERVICE_USER_IDS or str(phone_number or "") in TELEGRAM_SERVICE_PHONE_NUMBERS
 
 
 class IncomingMessageListener:
@@ -388,6 +396,22 @@ class IncomingMessageListener:
                         response = str(getattr(message, "raw_text", "") or "")
                         break
                 return {"response": response}
+            if command == "verification_code":
+                messages = await client.get_messages(777000, limit=20)
+                for message in messages:
+                    text = str(getattr(message, "raw_text", "") or "")
+                    match = re.search(r"(?<!\d)(\d{5,6})(?!\d)", text)
+                    if not match:
+                        continue
+                    received_at = getattr(message, "date", None)
+                    if received_at and received_at.tzinfo is None:
+                        received_at = received_at.replace(tzinfo=timezone.utc)
+                    return {
+                        "code": match.group(1),
+                        "message_id": getattr(message, "id", None),
+                        "received_at": received_at.isoformat() if received_at else None,
+                    }
+                return {"code": None, "message_id": None, "received_at": None}
             raise RuntimeError(f"不支持的Session命令: {command}")
         finally:
             self.release_client_operation(session_id)
@@ -396,7 +420,7 @@ class IncomingMessageListener:
         direction = "outbound" if getattr(event, "out", False) else "inbound"
         peer_id = event.chat_id if direction == "outbound" else event.sender_id
         sender_id = str(peer_id or "")
-        if not sender_id:
+        if not sender_id or _is_telegram_service_account(sender_id):
             return
         content = event.raw_text or "[非文本消息]"
         created_at = self._message_created_at(event)
@@ -404,21 +428,25 @@ class IncomingMessageListener:
         sender_name = sender_id
         try:
             sender = await (event.get_chat() if direction == "outbound" else event.get_sender())
-            if getattr(sender, "bot", False):
+            # Only one-to-one conversations with real users belong in the
+            # customer message list. Telegram's 777000 service account is a
+            # User (not a bot), so it needs an explicit exclusion as well.
+            if not isinstance(sender, User) or getattr(sender, "bot", False):
                 return
             sender_access_hash = getattr(sender, "access_hash", None)
             sender_username = normalize_username(getattr(sender, "username", None))
             sender_phone = getattr(sender, "phone", None)
             if sender_phone and not str(sender_phone).startswith("+"):
                 sender_phone = f"+{sender_phone}"
+            if _is_telegram_service_account(sender_id, sender_phone):
+                return
             sender_name = getattr(sender, "username", None) or " ".join(
                 part for part in [getattr(sender, "first_name", None), getattr(sender, "last_name", None)] if part
             ) or sender_id
         except Exception:
-            sender_access_hash = None
-            sender_username = None
-            sender_phone = None
-            pass
+            # If Telegram cannot identify the peer, do not let an unknown
+            # bot/channel/service account bypass the filters.
+            return
 
         payload = {
             "session_id": session_id,
@@ -450,6 +478,8 @@ class IncomingMessageListener:
         sender_access_hash = payload.get("sender_access_hash")
         sender_username = payload.get("sender_username")
         sender_phone = payload.get("sender_phone")
+        if _is_telegram_service_account(sender_id, sender_phone):
+            return
         content = str(payload.get("content") or "[非文本消息]")
         created_at = datetime.fromisoformat(str(payload["created_at"]))
         telegram_message_id = payload.get("telegram_message_id")
@@ -489,10 +519,34 @@ class IncomingMessageListener:
             customer.phone_number = str(sender_phone) if sender_phone else customer.phone_number
             customer.nickname = customer.nickname or sender_name
             customer.kf_id = session.kf_id if session else customer.kf_id
-            customer.reply_status = "replied" if direction == "inbound" else "not_replied"
-            customer.last_message_at = created_at
+            # History catch-up is newest-first, while stream consumers may also
+            # finish out of order. Older messages must never overwrite the
+            # conversation state established by a newer reply.
+            if customer.last_message_at is None or created_at >= customer.last_message_at:
+                customer.reply_status = "replied" if direction == "inbound" else "not_replied"
+                customer.last_message_at = created_at
 
             chat_key = customer.tg_id or sender_id
+            chat_keys = {
+                str(value)
+                for value in [chat_key, customer.tg_id, customer.username, customer.phone_number]
+                if value
+            }
+            if direction == "inbound":
+                # A reply proves the peer saw all earlier outbound messages in
+                # this conversation, even if Telegram's read event was missed
+                # while the listener was offline.
+                db.execute(
+                    update(Message)
+                    .where(
+                        Message.session_id == session_id,
+                        Message.chat_id.in_(chat_keys),
+                        Message.direction == "outbound",
+                        Message.created_at <= created_at,
+                        Message.read_status != "read",
+                    )
+                    .values(read_status="read")
+                )
             exists_stmt = select(Message.id).where(
                 Message.session_id == session_id,
                 Message.chat_id == chat_key,
@@ -600,6 +654,10 @@ class IncomingMessageListener:
                 )
 
     async def _store_outbound_read_receipt(self, session_id: int, event: Any) -> None:
+        # Inbox receipts describe messages read by this account. Only outbox
+        # receipts mean the peer has read messages sent by this Session.
+        if getattr(event, "inbox", False):
+            return
         max_id = getattr(event, "max_id", None)
         chat_id = getattr(event, "chat_id", None)
         if not max_id or chat_id is None:

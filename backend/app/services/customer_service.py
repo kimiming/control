@@ -86,26 +86,58 @@ class CustomerService:
             select(Customer, TelegramSession, SupportAgent)
             .join(TelegramSession, Customer.assigned_session_id == TelegramSession.id, isouter=True)
             .join(SupportAgent, TelegramSession.kf_id == SupportAgent.id, isouter=True)
-            .where(Customer.send_status != "unknown")
+            .where(
+                Customer.send_status != "unknown",
+                or_(Customer.tg_id.is_(None), Customer.tg_id.not_in(("333000", "777000"))),
+                or_(Customer.phone_number.is_(None), Customer.phone_number.not_in(("+42777", "42777"))),
+            )
         )
         if owner_id is not None:
             stmt = stmt.where(Customer.owner_id == owner_id)
         if kf_id is not None:
             stmt = stmt.where(TelegramSession.kf_id == kf_id)
-        if reply_status in {"replied", "not_replied"}:
-            stmt = stmt.where(Customer.reply_status == reply_status)
-        elif reply_status == "peer_read":
-            has_peer_read_message = select(Message.id).where(
+        has_unread_inbound = select(Message.id).where(
+            Message.session_id == Customer.assigned_session_id,
+            Message.direction == "inbound",
+            Message.read_status == "unread",
+            or_(
+                Message.chat_id == Customer.tg_id.collate("utf8mb4_unicode_ci"),
+                Message.chat_id == Customer.username.collate("utf8mb4_unicode_ci"),
+                Message.chat_id == Customer.phone_number.collate("utf8mb4_unicode_ci"),
+            ),
+        ).exists()
+        latest_outbound_status = (
+            select(Message.read_status)
+            .where(
                 Message.session_id == Customer.assigned_session_id,
                 Message.direction == "outbound",
-                Message.read_status == "read",
                 or_(
                     Message.chat_id == Customer.tg_id.collate("utf8mb4_unicode_ci"),
                     Message.chat_id == Customer.username.collate("utf8mb4_unicode_ci"),
                     Message.chat_id == Customer.phone_number.collate("utf8mb4_unicode_ci"),
                 ),
-            ).exists()
-            stmt = stmt.where(has_peer_read_message)
+            )
+            .order_by(Message.created_at.desc(), Message.id.desc())
+            .limit(1)
+            .scalar_subquery()
+        )
+        if reply_status == "replied":
+            stmt = stmt.where(or_(Customer.reply_status == "replied", has_unread_inbound))
+        elif reply_status == "not_replied":
+            stmt = stmt.where(Customer.reply_status == "not_replied", ~has_unread_inbound)
+        elif reply_status == "peer_read":
+            stmt = stmt.where(
+                Customer.reply_status == "not_replied",
+                latest_outbound_status == "read",
+                ~has_unread_inbound,
+            )
+        elif reply_status == "peer_unread":
+            stmt = stmt.where(
+                Customer.reply_status == "not_replied",
+                latest_outbound_status.is_not(None),
+                latest_outbound_status != "read",
+                ~has_unread_inbound,
+            )
         if is_favorite is not None:
             stmt = stmt.where(Customer.is_favorite == is_favorite)
         if keyword:
@@ -218,6 +250,7 @@ class CustomerService:
                 )
             )
         customer.last_message_at = datetime.utcnow()
+        customer.reply_status = "not_replied"
         db.commit()
         db.refresh(customer)
         return customer
@@ -276,6 +309,7 @@ class CustomerService:
         session: TelegramSession | None = None,
         support_agent: SupportAgent | None = None,
     ) -> dict[str, Any]:
+        unread_count = self.unread_count(db, customer)
         return {
             "id": customer.id,
             "phone_number": customer.phone_number,
@@ -289,9 +323,9 @@ class CustomerService:
             "kf_id": customer.kf_id,
             "kf_name": support_agent.name if support_agent else None,
             "send_status": customer.send_status,
-            "reply_status": customer.reply_status,
+            "reply_status": "replied" if unread_count else customer.reply_status,
             "is_favorite": customer.is_favorite,
-            "unread_count": self.unread_count(db, customer),
+            "unread_count": unread_count,
             "remark": customer.remark,
             "last_message_at": customer.last_message_at.isoformat() if customer.last_message_at else None,
             "created_at": customer.created_at.isoformat() if customer.created_at else None,

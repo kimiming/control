@@ -1,5 +1,5 @@
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +15,7 @@ from app.models.user import User
 from app.models.session import TelegramSession
 from app.schemas.session import GroupCreate, MoveSessions, MoveSessionsToAgent, MoveSessionsToProxy, SessionCreate, SessionIds, SessionUpdate
 from app.services.session_service import session_service
+from app.services.session_command_bus import SessionCommandError, session_command_bus
 from app.services.proxy_service import proxy_service
 from app.services.websocket_manager import session_ws_manager
 from app.core.cache import redis_client
@@ -40,10 +41,14 @@ async def list_sessions(
     health_status: str | None = None,
     bidirectional_status: str | None = None,
     keyword: str | None = None,
+    page: int = 1,
+    page_size: int = 20,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
-) -> list[dict[str, Any]]:
-    sessions = session_service.list_sessions(
+) -> dict[str, Any]:
+    page = max(page, 1)
+    page_size = min(max(page_size, 10), 100)
+    sessions, total = session_service.list_sessions(
         db,
         group_id=group_id,
         kf_id=kf_id,
@@ -52,6 +57,8 @@ async def list_sessions(
         keyword=keyword,
         owner_id=user.id,
         bidirectional_status=bidirectional_status,
+        page=page,
+        page_size=page_size,
     )
     values = await redis_client.mget(*[f"telegram:session:runtime:{item.id}" for item in sessions]) if sessions else []
     runtimes = []
@@ -60,7 +67,37 @@ async def list_sessions(
             runtimes.append(json.loads(value) if value else None)
         except json.JSONDecodeError:
             runtimes.append(None)
-    return [session_service.serialize_session(item, runtime, include_runtime=True) for item, runtime in zip(sessions, runtimes)]
+    session_ids = [item.id for item in sessions]
+    sent_count_keys = [f"session:sent-count:{session_id}" for session_id in session_ids]
+    cached_counts = await redis_client.mget(*sent_count_keys) if sent_count_keys else []
+    sent_counts: dict[int, int] = {}
+    missing_ids: list[int] = []
+    for session_id, cached in zip(session_ids, cached_counts):
+        if cached is None:
+            missing_ids.append(session_id)
+        else:
+            sent_counts[session_id] = int(cached)
+    if missing_ids:
+        fresh_counts = session_service.count_sent_messages_batch(db, missing_ids)
+        pipeline = redis_client.pipeline()
+        for session_id in missing_ids:
+            count = fresh_counts.get(session_id, 0)
+            sent_counts[session_id] = count
+            pipeline.set(f"session:sent-count:{session_id}", count, ex=30)
+        await pipeline.execute()
+    proxy_map = proxy_service.get_proxy_map_for_sessions(db, sessions, require_active=False)
+    items = [
+        session_service.serialize_session(
+            item,
+            runtime,
+            include_runtime=True,
+            proxy=proxy_map.get(item.id),
+            sent_count=sent_counts.get(item.id, 0),
+            resolve_related=False,
+        )
+        for item, runtime in zip(sessions, runtimes)
+    ]
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
 
 
 @router.get("/runtime")
@@ -295,6 +332,44 @@ async def bidirectional_check(session_id: int, db: Session = Depends(get_db), us
         status_code = 404 if str(exc) == "Session not found" else 400
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc
     return await _serialize_with_runtime(session)
+
+
+@router.get("/{session_id}/verification-code")
+async def get_verification_code(
+    session_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    sessions = session_service.get_sessions_by_ids(db, [session_id], user.id)
+    if not sessions:
+        raise HTTPException(status_code=404, detail="Session不存在")
+    session = sessions[0]
+    try:
+        result = await session_command_bus.execute(session_id, "verification_code", timeout=30)
+    except SessionCommandError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    received_at_value = result.get("received_at")
+    received_at = None
+    if received_at_value:
+        try:
+            received_at = datetime.fromisoformat(str(received_at_value).replace("Z", "+00:00"))
+            if received_at.tzinfo is None:
+                received_at = received_at.replace(tzinfo=timezone.utc)
+        except ValueError:
+            received_at = None
+    age_seconds = max(0, int((datetime.now(timezone.utc) - received_at).total_seconds())) if received_at else None
+    is_current = bool(result.get("code") and age_seconds is not None and age_seconds <= 300)
+    return {
+        "session_id": session.id,
+        "session_name": session.session_name,
+        "username": session.username,
+        "phone": session.phone,
+        "code": result.get("code"),
+        "received_at": received_at_value,
+        "age_seconds": age_seconds,
+        "status": "current" if is_current else "future",
+    }
 
 
 @router.get("/logs")

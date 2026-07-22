@@ -36,6 +36,14 @@ const materialTypeMeta = {
   contact: { label: '名片', color: 'purple' },
 };
 
+const conversationIdentity = (customer) => {
+  const sessionId = customer.assigned_session_id ?? 'unassigned';
+  const telegramIdentity = customer.tg_id
+    || customer.username?.trim().toLowerCase()
+    || customer.phone_number?.trim();
+  return telegramIdentity ? `${sessionId}:${telegramIdentity}` : `customer:${customer.id}`;
+};
+
 export default function Messages() {
   const queryClient = useQueryClient();
   const [keyword, setKeyword] = useState('');
@@ -90,8 +98,9 @@ export default function Messages() {
   const customers = useMemo(() => {
     const seen = new Set();
     return (customerQuery.data?.pages || []).flatMap((page) => page.items || []).filter((item) => {
-      if (seen.has(item.id)) return false;
-      seen.add(item.id);
+      const identity = conversationIdentity(item);
+      if (seen.has(identity)) return false;
+      seen.add(identity);
       return true;
     });
   }, [customerQuery.data]);
@@ -294,7 +303,8 @@ export default function Messages() {
           options={[
             { label: '已回复客户', value: 'replied' },
             { label: '未回复客户', value: 'not_replied' },
-            { label: '对方已读', value: 'peer_read' },
+            { label: '对方已读未回复（✓✓）', value: 'peer_read' },
+            { label: '对方未读未回复（✓）', value: 'peer_unread' },
           ]}
           onChange={(value) => {
             setReplyStatus(value);

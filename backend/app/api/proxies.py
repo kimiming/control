@@ -27,13 +27,13 @@ router = APIRouter(prefix="/proxies", tags=["proxies"])
 
 @router.get("")
 def list_proxies(db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> list[dict[str, Any]]:
-    return [proxy_service.serialize_proxy(item) for item in proxy_service.list_proxies(db, user.id)]
+    return [proxy_service.serialize_proxy(item, db) for item in proxy_service.list_proxies(db, user.id)]
 
 
 @router.post("")
 def create_proxy(payload: ProxyPayload, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
     proxy = proxy_service.create_proxy(db, payload.model_dump(), user.id)
-    return proxy_service.serialize_proxy(proxy)
+    return proxy_service.serialize_proxy(proxy, db)
 
 
 @router.put("/{proxy_id}")
@@ -42,7 +42,7 @@ def update_proxy(proxy_id: int, payload: ProxyPayload, db: Session = Depends(get
         proxy = proxy_service.update_proxy(db, proxy_id, payload.model_dump(), user.id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return proxy_service.serialize_proxy(proxy)
+    return proxy_service.serialize_proxy(proxy, db)
 
 
 @router.delete("/{proxy_id}")
@@ -60,7 +60,7 @@ def activate_proxy(proxy_id: int, db: Session = Depends(get_db), user: User = De
         proxy = proxy_service.activate_proxy(db, proxy_id, user.id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return proxy_service.serialize_proxy(proxy)
+    return proxy_service.serialize_proxy(proxy, db)
 
 
 @router.post("/{proxy_id}/test")
@@ -69,4 +69,4 @@ def test_proxy(proxy_id: int, db: Session = Depends(get_db), user: User = Depend
         proxy = proxy_service.test_proxy(db, proxy_id, user.id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return proxy_service.serialize_proxy(proxy)
+    return proxy_service.serialize_proxy(proxy, db)

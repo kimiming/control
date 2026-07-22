@@ -198,6 +198,12 @@ class TaskService:
         task = self.get_task(db, task_id, owner_id)
         if task.status in {"queued", "running", "paused", "cancelling"}:
             raise ValueError("Running or queued tasks cannot be deleted")
+        # Clean up explicitly instead of relying only on foreign-key actions.
+        # This keeps older installations consistent and removes the deleted
+        # task's logs rather than leaving them detached with a NULL task_id.
+        db.execute(delete(SessionTaskLog).where(SessionTaskLog.task_id == task.id))
+        db.execute(delete(TaskTarget).where(TaskTarget.task_id == task.id))
+        db.execute(delete(TaskOutbox).where(TaskOutbox.task_id == task.id))
         db.delete(task)
         db.commit()
 

@@ -13,6 +13,7 @@ import CustomerProfiles from './pages/CustomerProfiles.jsx';
 import Login from './pages/Login.jsx';
 import UsageDocs from './pages/UsageDocs.jsx';
 import Users from './pages/Users.jsx';
+import VerificationCode from './pages/VerificationCode.jsx';
 
 const Dashboard = lazy(() => import('./pages/Dashboard.jsx'));
 
@@ -41,12 +42,20 @@ function ProtectedApp() {
   );
 }
 
+function ProtectedVerificationCode() {
+  const auth = useAuth();
+  if (auth.loading) return <Spin fullscreen />;
+  if (!auth.token || !auth.user) return <Navigate to="/login" replace />;
+  return <VerificationCode />;
+}
+
 export default function App() {
   return (
     <AuthProvider>
       <BrowserRouter>
         <Routes>
           <Route path="/login" element={<Login />} />
+          <Route path="/sessions/:sessionId/verification-code" element={<ProtectedVerificationCode />} />
           <Route path="/*" element={<ProtectedApp />} />
         </Routes>
       </BrowserRouter>

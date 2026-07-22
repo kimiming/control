@@ -12,12 +12,14 @@ from typing import Any
 
 from fastapi import UploadFile
 from openpyxl import load_workbook
-from sqlalchemy import func, or_, select
-from sqlalchemy.orm import Session, object_session
+from sqlalchemy import delete, func, or_, select
+from sqlalchemy.orm import Session, noload, object_session
 
 from app.core.cache import redis_client
 from app.core.config import get_settings
 from app.core.database import SessionLocal
+from app.models.customer import Customer
+from app.models.message import Message
 from app.models.session import SessionGroup, SessionLog, SessionStatus, SessionTaskLog, TelegramSession
 from app.services.proxy_service import proxy_service
 from app.services.target_parser import parse_targets
@@ -63,36 +65,57 @@ class SessionService:
         keyword: str | None = None,
         owner_id: int | None = None,
         bidirectional_status: str | None = None,
-    ) -> list[TelegramSession]:
-        stmt = select(TelegramSession).order_by(TelegramSession.created_at.asc(), TelegramSession.id.asc())
+        page: int = 1,
+        page_size: int = 20,
+    ) -> tuple[list[TelegramSession], int]:
+        filters = []
         if owner_id is not None:
-            stmt = stmt.where(TelegramSession.owner_id == owner_id)
+            filters.append(TelegramSession.owner_id == owner_id)
         if group_id is not None:
             if group_id == 0:
-                stmt = stmt.where(TelegramSession.group_id.is_(None))
+                filters.append(TelegramSession.group_id.is_(None))
             else:
-                stmt = stmt.where(TelegramSession.group_id == group_id)
+                filters.append(TelegramSession.group_id == group_id)
         if kf_id is not None:
             if kf_id == 0:
-                stmt = stmt.where(TelegramSession.kf_id.is_(None))
+                filters.append(TelegramSession.kf_id.is_(None))
             else:
-                stmt = stmt.where(TelegramSession.kf_id == kf_id)
+                filters.append(TelegramSession.kf_id == kf_id)
         if status:
-            stmt = stmt.where(TelegramSession.status == status)
+            filters.append(TelegramSession.status == status)
         if health_status:
-            stmt = stmt.where(TelegramSession.health_status == health_status)
+            filters.append(TelegramSession.health_status == health_status)
         if bidirectional_status:
-            stmt = stmt.where(TelegramSession.bidirectional_status == bidirectional_status)
+            filters.append(TelegramSession.bidirectional_status == bidirectional_status)
         if keyword:
             like = f"%{keyword}%"
-            stmt = stmt.where(
+            filters.append(
                 or_(
                     TelegramSession.phone.like(like),
                     TelegramSession.username.like(like),
                     TelegramSession.session_name.like(like),
                 )
             )
-        return list(db.scalars(stmt).all())
+        total = int(db.scalar(select(func.count()).select_from(TelegramSession).where(*filters)) or 0)
+        stmt = (
+            select(TelegramSession)
+            .options(noload(TelegramSession.logs))
+            .where(*filters)
+            .order_by(TelegramSession.created_at.asc(), TelegramSession.id.asc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+        return list(db.scalars(stmt).all()), total
+
+    def count_sent_messages_batch(self, db: Session, session_ids: list[int]) -> dict[int, int]:
+        if not session_ids:
+            return {}
+        rows = db.execute(
+            select(SessionTaskLog.session_id, func.count(SessionTaskLog.id))
+            .where(SessionTaskLog.session_id.in_(session_ids), SessionTaskLog.status == "success")
+            .group_by(SessionTaskLog.session_id)
+        ).all()
+        return {int(session_id): int(count) for session_id, count in rows if session_id is not None}
 
     def create_session(self, db: Session, data: dict[str, Any], owner_id: int | None = None) -> TelegramSession:
         session = TelegramSession(
@@ -253,6 +276,11 @@ class SessionService:
             if await redis_client.exists(f"telegram:session:owner:{session.id}"):
                 raise ValueError("Session Worker尚未释放文件，请稍后重试")
         session_file = Path(settings.session_dir) / f"{session.session_name}.session"
+        # Delete both the message rows and their conversation-list entries.
+        # Existing databases may either lack cascades or set the customer's
+        # assigned_session_id to NULL, which would leave stale conversations.
+        db.execute(delete(Message).where(Message.session_id == session.id))
+        db.execute(delete(Customer).where(Customer.assigned_session_id == session.id))
         db.delete(session)
         db.commit()
         if session_file.exists():
@@ -279,11 +307,10 @@ class SessionService:
         owner_id: int,
         session_ids: list[int] | None = None,
     ) -> tuple[Path, dict[str, int]]:
-        sessions = (
-            self.get_sessions_by_ids(db, list(dict.fromkeys(session_ids)), owner_id)
-            if session_ids is not None
-            else self.list_sessions(db, owner_id=owner_id)
-        )
+        if session_ids is not None:
+            sessions = self.get_sessions_by_ids(db, list(dict.fromkeys(session_ids)), owner_id)
+        else:
+            sessions, _ = self.list_sessions(db, owner_id=owner_id, page_size=1_000_000)
         requested = len(set(session_ids)) if session_ids is not None else len(sessions)
         session_dir = Path(settings.session_dir).resolve()
         archive_fd, archive_name = tempfile.mkstemp(prefix="tg_sessions_", suffix=".zip")
@@ -754,10 +781,17 @@ class SessionService:
         await session_ws_manager.broadcast("*", payload)
 
     def serialize_session(
-        self, session: TelegramSession, runtime: dict[str, Any] | None = None, include_runtime: bool = False,
+        self,
+        session: TelegramSession,
+        runtime: dict[str, Any] | None = None,
+        include_runtime: bool = False,
+        proxy: Any = None,
+        sent_count: int | None = None,
+        resolve_related: bool = True,
     ) -> dict[str, Any]:
         db = object_session(session)
-        proxy = proxy_service.get_proxy_for_session(db, session, require_active=False) if db else None
+        if resolve_related:
+            proxy = proxy_service.get_proxy_for_session(db, session, require_active=False) if db else None
         payload = {
             "id": session.id,
             "username": session.username,
@@ -784,7 +818,7 @@ class SessionService:
             "proxy_name": proxy.name if proxy else None,
             "proxy_color": proxy.color if proxy else None,
             "proxy_status": proxy.status if proxy else None,
-            "sent_count": self.count_sent_messages(db, session.id) if db else 0,
+            "sent_count": self.count_sent_messages(db, session.id) if db and sent_count is None else (sent_count or 0),
             "created_at": session.created_at.isoformat() if session.created_at else None,
             "updated_at": session.updated_at.isoformat() if session.updated_at else None,
         }

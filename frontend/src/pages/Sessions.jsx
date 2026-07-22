@@ -143,6 +143,11 @@ function downloadSessionArchive(data, scope) {
   URL.revokeObjectURL(url);
 }
 
+const updateSessionPageItems = (old, updater) => {
+  if (!old || !Array.isArray(old.items)) return old;
+  return { ...old, items: updater(old.items) };
+};
+
 export default function Sessions() {
   const queryClient = useQueryClient();
   const [modalOpen, setModalOpen] = useState(false);
@@ -153,6 +158,7 @@ export default function Sessions() {
   const [moveAgentId, setMoveAgentId] = useState(null);
   const [moveProxyId, setMoveProxyId] = useState(null);
   const [filters, setFilters] = useState({});
+  const [pagination, setPagination] = useState({ current: 1, pageSize: 20 });
   const [logsOpen, setLogsOpen] = useState(false);
   const [taskLogSession, setTaskLogSession] = useState(null);
   const [contactImportTarget, setContactImportTarget] = useState(null);
@@ -162,10 +168,13 @@ export default function Sessions() {
   const [manualRefreshing, setManualRefreshing] = useState(false);
   const [groupForm] = Form.useForm();
 
-  const { data: sessions = [], isLoading, isFetching: sessionsFetching, refetch: refreshSessions } = useQuery({
-    queryKey: ['sessions', filters],
-    queryFn: () => getSessions(filters),
+  const { data: sessionPage, isLoading, isFetching: sessionsFetching, refetch: refreshSessions } = useQuery({
+    queryKey: ['sessions', filters, pagination.current, pagination.pageSize],
+    queryFn: () => getSessions({ ...filters, page: pagination.current, page_size: pagination.pageSize }),
+    placeholderData: (previousData) => previousData,
   });
+  const sessions = sessionPage?.items || [];
+  const sessionTotal = sessionPage?.total || 0;
   const { data: sessionRuntime = [] } = useQuery({
     queryKey: ['session-runtime'],
     queryFn: getSessionRuntime,
@@ -173,7 +182,16 @@ export default function Sessions() {
   });
   const sessionsWithRuntime = useMemo(() => {
     const runtimeById = new Map(sessionRuntime.map((item) => [item.id, item]));
-    return sessions.map((session) => ({ ...session, ...(runtimeById.get(session.id) || {}) }));
+    return sessions.map((session) => {
+      const runtime = runtimeById.get(session.id);
+      if (!runtime) return session;
+      if (
+        session.runtime_status === runtime.runtime_status
+        && session.runtime_worker === runtime.runtime_worker
+        && session.runtime_last_heartbeat === runtime.runtime_last_heartbeat
+      ) return session;
+      return { ...session, ...runtime };
+    });
   }, [sessions, sessionRuntime]);
   const { data: groups = [] } = useQuery({ queryKey: ['session-groups'], queryFn: getGroups });
   const { data: supportAgents = [] } = useQuery({ queryKey: ['support-agents'], queryFn: getSupportAgents });
@@ -211,18 +229,20 @@ export default function Sessions() {
           return;
         }
         if (payload.event === 'deleted') {
-          queryClient.setQueriesData({ queryKey: ['sessions'] }, (old = []) => (
-            Array.isArray(old) ? old.filter((item) => item.id !== payload.id) : old
-          ));
+          queryClient.setQueriesData({ queryKey: ['sessions'] }, (old) => {
+            if (!old || !Array.isArray(old.items)) return old;
+            const exists = old.items.some((item) => item.id === payload.id);
+            return exists
+              ? { ...old, items: old.items.filter((item) => item.id !== payload.id), total: Math.max(0, old.total - 1) }
+              : old;
+          });
           return;
         }
         if (payload.session) {
-          queryClient.setQueriesData({ queryKey: ['sessions'] }, (old = []) => {
-            if (!Array.isArray(old)) return old;
-            const exists = old.some((item) => item.id === payload.session.id);
-            if (!exists) return [payload.session, ...old];
-            return old.map((item) => (item.id === payload.session.id ? { ...item, ...payload.session } : item));
-          });
+          queryClient.setQueriesData({ queryKey: ['sessions'] }, (old) => updateSessionPageItems(
+            old,
+            (items) => items.map((item) => (item.id === payload.session.id ? { ...item, ...payload.session } : item)),
+          ));
         }
       };
       socket.onclose = () => {
@@ -245,11 +265,11 @@ export default function Sessions() {
   const saveMutation = useMutation({
     mutationFn: (values) => (editing ? updateSession(editing.id, values) : createSession(values)),
     onSuccess: (data) => {
-      queryClient.setQueriesData({ queryKey: ['sessions'] }, (old = []) => {
-        if (!Array.isArray(old)) return old;
-        const exists = old.some((item) => item.id === data.id);
-        return exists ? old.map((item) => (item.id === data.id ? data : item)) : [data, ...old];
-      });
+      queryClient.setQueriesData({ queryKey: ['sessions'] }, (old) => updateSessionPageItems(
+        old,
+        (items) => items.map((item) => (item.id === data.id ? data : item)),
+      ));
+      queryClient.invalidateQueries({ queryKey: ['sessions'] });
       setModalOpen(false);
       setEditing(null);
     },
@@ -258,8 +278,9 @@ export default function Sessions() {
   const actionMutation = useMutation({
     mutationFn: ({ id, action }) => updateSession(id, { action }),
     onSuccess: (data, variables) => {
-      queryClient.setQueriesData({ queryKey: ['sessions'] }, (old = []) => (
-        Array.isArray(old) ? old.map((item) => (item.id === data.id ? { ...item, ...data } : item)) : old
+      queryClient.setQueriesData({ queryKey: ['sessions'] }, (old) => updateSessionPageItems(
+        old,
+        (items) => items.map((item) => (item.id === data.id ? { ...item, ...data } : item)),
       ));
       if (variables.action === 'connect' && data.status !== 'connected') {
         message.warning(`Session连接未成功：${data.error_message || '请查看连接状态'}`, 8);
@@ -274,9 +295,14 @@ export default function Sessions() {
   const deleteMutation = useMutation({
     mutationFn: (record) => deleteSession(record.id),
     onSuccess: (_, record) => {
-      queryClient.setQueriesData({ queryKey: ['sessions'] }, (old = []) => (
-        Array.isArray(old) ? old.filter((item) => item.id !== record.id) : old
-      ));
+      queryClient.setQueriesData({ queryKey: ['sessions'] }, (old) => {
+        if (!old || !Array.isArray(old.items)) return old;
+        return {
+          ...old,
+          items: old.items.filter((item) => item.id !== record.id),
+          total: Math.max(0, old.total - 1),
+        };
+      });
       message.success('Session已删除');
     },
     onError: (error) => message.error(error?.response?.data?.detail || error.message || '删除Session失败'),
@@ -397,8 +423,9 @@ export default function Sessions() {
       return checkSessionBidirectional(record.id);
     },
     onSuccess: (data) => {
-      queryClient.setQueriesData({ queryKey: ['sessions'] }, (old = []) => (
-        Array.isArray(old) ? old.map((item) => (item.id === data.id ? { ...item, ...data } : item)) : old
+      queryClient.setQueriesData({ queryKey: ['sessions'] }, (old) => updateSessionPageItems(
+        old,
+        (items) => items.map((item) => (item.id === data.id ? { ...item, ...data } : item)),
       ));
       const resultText = {
         normal: '账号正常，不是双向号',
@@ -536,6 +563,11 @@ export default function Sessions() {
     }
   };
 
+  const updateFilters = (updater) => {
+    setPagination((old) => ({ ...old, current: 1 }));
+    setFilters(updater);
+  };
+
   const renderSupportAgentOption = (option) => {
     if (option.value === 0) return <Tag>未绑定</Tag>;
     const agent = supportAgents.find((item) => item.id === option.value);
@@ -573,14 +605,14 @@ export default function Sessions() {
             allowClear
             placeholder="搜索手机号、用户名、Session名"
             style={{ width: 260 }}
-            onSearch={(value) => setFilters((old) => ({ ...old, keyword: value || undefined }))}
+            onSearch={(value) => updateFilters((old) => ({ ...old, keyword: value || undefined }))}
           />
           <Select
             allowClear
             placeholder="按分组筛选"
             style={{ width: 180 }}
             value={filters.group_id}
-            onChange={(value) => setFilters((old) => ({ ...old, group_id: value }))}
+            onChange={(value) => updateFilters((old) => ({ ...old, group_id: value }))}
             options={groupSelectOptions}
             optionRender={renderGroupOption}
             labelRender={renderGroupOption}
@@ -590,7 +622,7 @@ export default function Sessions() {
             placeholder="按客服筛选"
             style={{ width: 180 }}
             value={filters.kf_id}
-            onChange={(value) => setFilters((old) => ({ ...old, kf_id: value }))}
+            onChange={(value) => updateFilters((old) => ({ ...old, kf_id: value }))}
             options={[
               { value: 0, label: '未绑定' },
               ...supportAgents.map((agent) => ({ value: agent.id, label: agent.name })),
@@ -602,7 +634,7 @@ export default function Sessions() {
             placeholder="连接状态"
             style={{ width: 150 }}
             value={filters.status}
-            onChange={(value) => setFilters((old) => ({ ...old, status: value }))}
+            onChange={(value) => updateFilters((old) => ({ ...old, status: value }))}
             options={sessionStatusOptions}
             optionRender={(option) => renderStatusOption(option, sessionStatusOptions)}
             labelRender={(option) => renderStatusOption(option, sessionStatusOptions)}
@@ -612,7 +644,7 @@ export default function Sessions() {
             placeholder="双向号状态"
             style={{ width: 180 }}
             value={filters.bidirectional_status}
-            onChange={(value) => setFilters((old) => ({ ...old, bidirectional_status: value }))}
+            onChange={(value) => updateFilters((old) => ({ ...old, bidirectional_status: value }))}
             options={bidirectionalStatusOptions}
             optionRender={(option) => renderStatusOption(option, bidirectionalStatusOptions)}
             labelRender={(option) => renderStatusOption(option, bidirectionalStatusOptions)}
@@ -626,7 +658,7 @@ export default function Sessions() {
           >
             刷新列表
           </Button>
-          <Button onClick={() => setFilters({})}>重置</Button>
+          <Button onClick={() => updateFilters({})}>重置</Button>
         </Space>
       </Card>
       <div className="session-action-panel">
@@ -796,6 +828,8 @@ export default function Sessions() {
       <SessionList
         sessions={sessionsWithRuntime}
         loading={isLoading}
+        pagination={{ ...pagination, total: sessionTotal }}
+        onPaginationChange={setPagination}
         selectedRowKeys={selectedRowKeys}
         onSelectionChange={setSelectedRowKeys}
         onEdit={(record) => { setEditing(record); setModalOpen(true); }}
@@ -803,6 +837,7 @@ export default function Sessions() {
         onDisconnect={(record) => actionMutation.mutate({ id: record.id, action: 'disconnect' })}
         onDelete={(record) => deleteMutation.mutate(record)}
         onTaskLogs={(record) => setTaskLogSession(record)}
+        onVerificationCode={(record) => window.open(`/sessions/${record.id}/verification-code`, '_blank', 'noopener,noreferrer')}
         onBidirectionalCheck={(record) => bidirectionalMutation.mutate(record)}
         onContactScan={(record) => contactMutation.mutate({ record, action: 'scan' })}
         onContactClear={(record) => Modal.confirm({

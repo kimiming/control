@@ -121,7 +121,7 @@ export default function Proxies() {
     },
     {
       title: '绑定分组',
-      dataIndex: 'group_ids',
+      dataIndex: 'bound_group_ids',
       width: 220,
       render: (value = []) => value.length ? (
         <Space wrap>

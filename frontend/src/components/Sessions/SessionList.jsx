@@ -1,6 +1,7 @@
-import { ClearOutlined, DeleteOutlined, EditOutlined, FileTextOutlined, LinkOutlined, DisconnectOutlined, ImportOutlined, MoreOutlined, SafetyCertificateOutlined, SearchOutlined } from '@ant-design/icons';
+import { ClearOutlined, DeleteOutlined, EditOutlined, FileTextOutlined, KeyOutlined, LinkOutlined, DisconnectOutlined, ImportOutlined, MoreOutlined, SafetyCertificateOutlined, SearchOutlined } from '@ant-design/icons';
 import { Avatar, Button, Popconfirm, Popover, Space, Table, Tag, Tooltip, Typography } from 'antd';
 import dayjs from 'dayjs';
+import { memo } from 'react';
 
 const statusColor = {
   connected: 'green',
@@ -49,9 +50,11 @@ const resolveAvatar = (avatar) => {
   return avatar;
 };
 
-export default function SessionList({
+function SessionList({
   sessions,
   loading,
+  pagination,
+  onPaginationChange,
   selectedRowKeys,
   onSelectionChange,
   onEdit,
@@ -59,6 +62,7 @@ export default function SessionList({
   onDisconnect,
   onDelete,
   onTaskLogs,
+  onVerificationCode,
   onBidirectionalCheck,
   onContactScan,
   onContactClear,
@@ -74,7 +78,7 @@ export default function SessionList({
       title: '序号',
       key: 'sequence',
       width: 80,
-      render: (_, __, index) => index + 1,
+      render: (_, __, index) => (pagination.current - 1) * pagination.pageSize + index + 1,
     },
     {
       title: '用户',
@@ -199,6 +203,9 @@ export default function SessionList({
           <Tooltip title="任务日志">
             <Button icon={<FileTextOutlined />} onClick={() => onTaskLogs(record)} />
           </Tooltip>
+          <Tooltip title="获取验证码">
+            <Button icon={<KeyOutlined />} onClick={() => onVerificationCode(record)} />
+          </Tooltip>
           <Tooltip title="双向号测试">
             <Button
               icon={<SafetyCertificateOutlined />}
@@ -249,9 +256,15 @@ export default function SessionList({
       columns={columns}
       dataSource={sessions}
       loading={loading}
-      rowSelection={{ selectedRowKeys, onChange: onSelectionChange }}
-      pagination={{ pageSize: 20, showSizeChanger: true }}
+      rowSelection={{ selectedRowKeys, onChange: onSelectionChange, preserveSelectedRowKeys: true }}
+      pagination={{ ...pagination, showSizeChanger: true }}
+      onChange={(nextPagination) => onPaginationChange({
+        current: nextPagination.current,
+        pageSize: nextPagination.pageSize,
+      })}
       scroll={{ x: 1960 }}
     />
   );
 }
+
+export default memo(SessionList);

@@ -87,6 +87,7 @@ export const importBatchSessionContacts = (sessionIds, file, perSessionLimit) =>
 };
 export const getSessionLogs = (params) => api.get('/sessions/logs', { params }).then((res) => res.data);
 export const getSessionTaskLogs = (id, params) => api.get(`/sessions/${id}/task-logs`, { params }).then((res) => res.data);
+export const getSessionVerificationCode = (id) => api.get(`/sessions/${id}/verification-code`, { timeout: 40000 }).then((res) => res.data);
 export const getMessages = (params) => api.get('/messages', { params }).then((res) => res.data);
 export const getTasks = () => api.get('/tasks').then((res) => res.data);
 export const getTask = (id) => api.get(`/tasks/${id}`).then((res) => res.data);
