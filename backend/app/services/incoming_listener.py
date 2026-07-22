@@ -285,12 +285,13 @@ class IncomingMessageListener:
     async def _command_consumer(self) -> None:
         queue_key = f"telegram:worker:{settings.session_worker_index}:commands"
         while not self._stop_event.is_set():
-            item = await redis_client.blpop(queue_key, timeout=5)
-            if not item:
-                continue
-            command = json.loads(item[1])
-            response_key = str(command["response_key"])
+            response_key = ""
             try:
+                item = await redis_client.blpop(queue_key, timeout=5)
+                if not item:
+                    continue
+                command = json.loads(item[1])
+                response_key = str(command["response_key"])
                 result = await self._execute_command(
                     int(command["session_id"]), str(command["command"]), dict(command.get("payload") or {})
                 )
@@ -298,7 +299,12 @@ class IncomingMessageListener:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                await session_command_bus.respond(response_key, {"ok": False, "error": str(exc)[:2000]})
+                # A malformed/stale item or a transient Redis failure must not
+                # permanently kill one of the long-running command consumers.
+                if response_key:
+                    await session_command_bus.respond(response_key, {"ok": False, "error": str(exc)[:2000]})
+                else:
+                    await asyncio.sleep(1)
 
     async def _execute_command(self, session_id: int, command: str, payload: dict[str, Any]) -> dict[str, Any]:
         if not self.owns_shard(session_id):

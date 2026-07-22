@@ -39,8 +39,11 @@ def build_client(session_name: str, proxy_url: str | None = None) -> TelegramCli
         settings.telegram_api_id,
         settings.telegram_api_hash,
         proxy=build_proxy(proxy_url),
+        # Let the worker supervisor own reconnect/backoff. Telethon's internal
+        # reconnect loop can monopolize a worker when a configured proxy dies,
+        # which also prevents that worker from consuming command-bus requests.
         auto_reconnect=True,
-        connection_retries=5,
+        connection_retries=2,
         retry_delay=1,
         timeout=10,
     )
