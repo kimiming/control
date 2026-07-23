@@ -107,7 +107,11 @@ async def list_session_runtime(
 ) -> list[dict[str, Any]]:
     """Return only volatile worker heartbeats for inexpensive UI polling."""
     session_rows = list(db.execute(
-        select(TelegramSession.id, TelegramSession.status)
+        select(
+            TelegramSession.id,
+            TelegramSession.status,
+            TelegramSession.bidirectional_status,
+        )
         .where(TelegramSession.owner_id == user.id)
     ).all())
     if not session_rows:
@@ -123,6 +127,7 @@ async def list_session_runtime(
         result.append({
             "id": int(row.id),
             "status": row.status.value if hasattr(row.status, "value") else str(row.status),
+            "bidirectional_status": row.bidirectional_status or "unchecked",
             "runtime_status": runtime.get("status", "offline"),
             "runtime_worker": runtime.get("worker"),
             "runtime_last_heartbeat": runtime.get("last_heartbeat"),
@@ -254,7 +259,7 @@ async def health_check(db: Session = Depends(get_db), user: User = Depends(get_c
 
 
 @router.post("/bidirectional-check")
-async def batch_bidirectional_check(payload: SessionIds, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, int]:
+async def batch_bidirectional_check(payload: SessionIds, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
     return await session_service.check_bidirectional_statuses(db, payload.session_ids, user.id)
 
 

@@ -167,13 +167,14 @@ export default function Sessions() {
   const [batchImporting, setBatchImporting] = useState(false);
   const [manualRefreshing, setManualRefreshing] = useState(false);
   const [batchConnectingIds, setBatchConnectingIds] = useState([]);
+  const [batchBidirectionalIds, setBatchBidirectionalIds] = useState([]);
   const [groupForm] = Form.useForm();
 
   const { data: sessionPage, isLoading, isFetching: sessionsFetching, refetch: refreshSessions } = useQuery({
     queryKey: ['sessions', filters, pagination.current, pagination.pageSize],
     queryFn: () => getSessions({ ...filters, page: pagination.current, page_size: pagination.pageSize }),
     placeholderData: (previousData) => previousData,
-    refetchInterval: batchConnectingIds.length ? 3000 : false,
+    refetchInterval: (batchConnectingIds.length || batchBidirectionalIds.length) ? 3000 : false,
   });
   const sessions = sessionPage?.items || [];
   const sessionTotal = sessionPage?.total || 0;
@@ -181,7 +182,7 @@ export default function Sessions() {
     queryKey: ['session-runtime'],
     queryFn: getSessionRuntime,
     refetchInterval: (query) => query.state.fetchStatus !== 'fetching'
-      ? (batchConnectingIds.length ? 3000 : 10000)
+      ? ((batchConnectingIds.length || batchBidirectionalIds.length) ? 3000 : 10000)
       : false,
   });
   const sessionsWithRuntime = useMemo(() => {
@@ -216,6 +217,31 @@ export default function Sessions() {
       percent: total ? Math.round((finished / total) * 100) : 0,
     };
   }, [batchConnectingIds, sessionRuntime]);
+  const batchBidirectionalProgress = useMemo(() => {
+    const runtimeById = new Map(sessionRuntime.map((item) => [item.id, item]));
+    const counts = {
+      normal: 0,
+      blocked: 0,
+      restricted: 0,
+      unknown: 0,
+      timeout: 0,
+      unauthorized: 0,
+      error: 0,
+    };
+    batchBidirectionalIds.forEach((id) => {
+      const status = runtimeById.get(id)?.bidirectional_status;
+      if (Object.prototype.hasOwnProperty.call(counts, status)) counts[status] += 1;
+    });
+    const total = batchBidirectionalIds.length;
+    const finished = Object.values(counts).reduce((sum, count) => sum + count, 0);
+    return {
+      total,
+      finished,
+      pending: Math.max(total - finished, 0),
+      percent: total ? Math.round((finished / total) * 100) : 0,
+      counts,
+    };
+  }, [batchBidirectionalIds, sessionRuntime]);
   const { data: groups = [] } = useQuery({ queryKey: ['session-groups'], queryFn: getGroups });
   const { data: supportAgents = [] } = useQuery({ queryKey: ['support-agents'], queryFn: getSupportAgents });
   const { data: proxies = [] } = useQuery({ queryKey: ['proxies'], queryFn: getProxies });
@@ -356,6 +382,10 @@ export default function Sessions() {
     mutationFn: () => connectSessions(selectedRowKeys),
     onSuccess: (data) => {
       const acceptedIds = data.accepted_ids || [];
+      const acceptedSet = new Set(acceptedIds);
+      queryClient.setQueryData(['session-runtime'], (old = []) => old.map((item) => (
+        acceptedSet.has(item.id) ? { ...item, status: 'connecting', runtime_status: 'offline' } : item
+      )));
       setBatchConnectingIds(acceptedIds);
       const notice = `连接任务已进入后台：提交 ${data.accepted} 个，跳过已连接/连接中 ${data.skipped} 个`;
       message.success(notice, 6);
@@ -481,13 +511,28 @@ export default function Sessions() {
       return checkAllSessionsBidirectional(selectedRowKeys);
     },
     onSuccess: (data) => {
+      const acceptedIds = data.accepted_ids || [];
+      const acceptedSet = new Set(acceptedIds);
+      queryClient.setQueryData(['session-runtime'], (old = []) => old.map((item) => (
+        acceptedSet.has(item.id) ? { ...item, bidirectional_status: 'checking' } : item
+      )));
+      setBatchBidirectionalIds(acceptedIds);
       queryClient.invalidateQueries({ queryKey: ['sessions'] });
+      queryClient.invalidateQueries({ queryKey: ['session-runtime'] });
       setSelectedRowKeys([]);
-      const text = `批量检测完成：选中 ${data.requested} 个，找到 ${data.found} 个，已检测 ${data.checked} 个，跳过 ${data.skipped} 个；正常 ${data.normal} 个，已封禁 ${data.blocked} 个，疑似双向号 ${data.restricted} 个，未识别 ${data.unknown} 个，超时 ${data.timeout} 个，未授权 ${data.unauthorized} 个，异常 ${data.error} 个`;
-      Modal.info({ title: '批量双向号检测结果', content: `${text}。失败详情请查看操作日志。`, width: 680 });
+      message.success(`双向号检测已进入后台：提交 ${data.accepted} 个，跳过 ${data.skipped} 个`, 6);
     },
     onError: (error) => message.error(error?.response?.data?.detail || error.message || '批量双向号检测失败'),
   });
+
+  useEffect(() => {
+    if (!batchBidirectionalProgress.total || batchBidirectionalProgress.pending) return;
+    const { counts } = batchBidirectionalProgress;
+    const text = `检测 ${batchBidirectionalProgress.total} 个；正常 ${counts.normal} 个，已封禁 ${counts.blocked} 个，疑似双向号 ${counts.restricted} 个，未识别 ${counts.unknown} 个，超时 ${counts.timeout} 个，未授权 ${counts.unauthorized} 个，异常 ${counts.error} 个`;
+    Modal.info({ title: '批量双向号检测完成', content: `${text}。失败详情请查看操作日志。`, width: 680 });
+    setBatchBidirectionalIds([]);
+    queryClient.invalidateQueries({ queryKey: ['sessions'] });
+  }, [batchBidirectionalProgress, queryClient]);
 
   const contactMutation = useMutation({
     mutationFn: ({ record, action }) => {
@@ -642,6 +687,15 @@ export default function Sessions() {
           style={{ marginBottom: 12 }}
         />
       )}
+      {batchBidirectionalProgress.total > 0 && (
+        <Alert
+          showIcon
+          type="info"
+          message={`后台双向号检测：${batchBidirectionalProgress.finished}/${batchBidirectionalProgress.total} 已完成，${batchBidirectionalProgress.pending} 个处理中`}
+          description={<Progress percent={batchBidirectionalProgress.percent} status="active" />}
+          style={{ marginBottom: 12 }}
+        />
+      )}
       <Card size="small" className="filter-card" title="搜索筛选">
         <Space wrap>
           <Input.Search
@@ -761,7 +815,7 @@ export default function Sessions() {
             className="session-action-button--green"
             icon={<SafetyCertificateOutlined />}
             loading={batchBidirectionalMutation.isPending}
-            disabled={!selectedRowKeys.length || bidirectionalMutation.isPending || healthMutation.isPending}
+            disabled={!selectedRowKeys.length || bidirectionalMutation.isPending || healthMutation.isPending || batchBidirectionalIds.length > 0}
             onClick={() => batchBidirectionalMutation.mutate()}
           >
             批量双向号检测

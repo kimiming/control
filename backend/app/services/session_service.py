@@ -33,12 +33,15 @@ settings = get_settings()
 
 class SessionService:
     _CONNECT_QUEUE_LOCK_SECONDS = 180
+    _BIDIRECTIONAL_QUEUE_LOCK_SECONDS = 300
 
     def __init__(self) -> None:
         # Keep strong references until completion; otherwise fire-and-forget
         # asyncio tasks may be garbage-collected while a batch is running.
         self._connect_tasks: set[asyncio.Task[Any]] = set()
         self._connect_semaphore = asyncio.Semaphore(max(settings.session_worker_count, 12))
+        self._bidirectional_tasks: set[asyncio.Task[Any]] = set()
+        self._bidirectional_semaphore = asyncio.Semaphore(max(settings.session_worker_count, 12))
 
     _SPAM_BOT_NORMAL_MARKERS = (
         "good news",
@@ -565,43 +568,107 @@ class SessionService:
         db: Session,
         session_ids: list[int],
         owner_id: int | None = None,
-    ) -> dict[str, int]:
+    ) -> dict[str, Any]:
         unique_ids = list(dict.fromkeys(session_ids))
         sessions = self.get_sessions_by_ids(db, unique_ids, owner_id)
-        connection_errors = await self._auto_connect_sessions([session.id for session in sessions], owner_id)
         found_ids = {session.id for session in sessions}
-        summary = {
+        summary: dict[str, Any] = {
             "requested": len(unique_ids),
             "found": len(sessions),
-            "checked": 0,
+            "accepted": 0,
+            "accepted_ids": [],
             "skipped": len(unique_ids) - len(found_ids),
-            "normal": 0,
-            "blocked": 0,
-            "restricted": 0,
-            "unknown": 0,
-            "timeout": 0,
-            "unauthorized": 0,
-            "error": 0,
         }
         for session in sessions:
-            if session.id in connection_errors:
-                summary["error"] += 1
+            lock_key = f"telegram:session:bidirectional-pending:{session.id}"
+            lock_token = uuid.uuid4().hex
+            acquired = await redis_client.set(
+                lock_key,
+                lock_token,
+                nx=True,
+                ex=self._BIDIRECTIONAL_QUEUE_LOCK_SECONDS,
+            )
+            if session.bidirectional_status == "checking" or not acquired:
+                if acquired:
+                    await self._release_queue_lock(lock_key, lock_token)
                 summary["skipped"] += 1
-                self.log(db, session.id, "bidirectional_check_failed", connection_errors[session.id])
+                self.log(db, session.id, "bidirectional_check_skipped", "检测任务已在执行")
                 db.commit()
                 continue
-            try:
-                result = await self.check_bidirectional_status(db, session.id, owner_id)
-                if result.bidirectional_status in {"restricted", "unknown"}:
-                    await asyncio.sleep(1)
-                    result = await self.check_bidirectional_status(db, session.id, owner_id)
-                summary["checked"] += 1
-                status = result.bidirectional_status or "error"
-                summary[status if status in summary else "error"] += 1
-            except ValueError:
-                db.rollback()
+
+            if await redis_client.exists(f"marketing:session_lock:{session.id}"):
+                await self._release_queue_lock(lock_key, lock_token)
                 summary["skipped"] += 1
+                self.log(db, session.id, "bidirectional_check_skipped", "Session is busy sending a task")
+                db.commit()
+                continue
+
+            session.bidirectional_status = "checking"
+            session.bidirectional_detail = None
+            self.log(db, session.id, "bidirectional_check_queued", "双向号检测任务已进入后台队列")
+            db.commit()
+            db.refresh(session)
+            await self.publish_status(session, "bidirectional_checking")
+
+            task = asyncio.create_task(
+                self._run_queued_bidirectional_check(session.id, owner_id, lock_key, lock_token),
+                name=f"bidirectional-check-{session.id}",
+            )
+            self._bidirectional_tasks.add(task)
+            task.add_done_callback(self._bidirectional_tasks.discard)
+            summary["accepted"] += 1
+            summary["accepted_ids"].append(session.id)
         return summary
+
+    async def _run_queued_bidirectional_check(
+        self,
+        session_id: int,
+        owner_id: int | None,
+        lock_key: str,
+        lock_token: str,
+    ) -> None:
+        try:
+            async with self._bidirectional_semaphore:
+                db = SessionLocal()
+                try:
+                    session = self._owned_session(db, session_id, owner_id)
+                    if not await redis_client.exists(f"telegram:session:runtime:{session_id}"):
+                        if session.status == SessionStatus.connecting:
+                            for _ in range(120):
+                                if await redis_client.exists(f"telegram:session:runtime:{session_id}"):
+                                    break
+                                await asyncio.sleep(0.5)
+                        if not await redis_client.exists(f"telegram:session:runtime:{session_id}"):
+                            await self.connect_session(db, session)
+
+                    result = await self.check_bidirectional_status(db, session_id, owner_id)
+                    if result.bidirectional_status in {"restricted", "unknown"}:
+                        await asyncio.sleep(1)
+                        await self.check_bidirectional_status(db, session_id, owner_id)
+                except Exception as exc:
+                    db.rollback()
+                    session = db.get(TelegramSession, session_id)
+                    if session:
+                        session.bidirectional_status = "error"
+                        session.bidirectional_detail = str(exc)[:10000]
+                        session.last_bidirectional_check_at = datetime.utcnow()
+                        self.log(db, session.id, "bidirectional_check_failed", str(exc)[:10000])
+                        db.commit()
+                        db.refresh(session)
+                        await self.publish_status(session, "bidirectional_checked")
+                finally:
+                    db.close()
+        finally:
+            await self._release_queue_lock(lock_key, lock_token)
+
+    async def _release_queue_lock(self, key: str, token: str) -> None:
+        await redis_client.eval(
+            "if redis.call('get', KEYS[1]) == ARGV[1] then "
+            "return redis.call('del', KEYS[1]) else return 0 end",
+            1,
+            key,
+            token,
+        )
 
     async def scan_contacts(self, db: Session, session_id: int, owner_id: int | None = None) -> TelegramSession:
         session = self._owned_session(db, session_id, owner_id)
