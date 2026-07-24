@@ -212,6 +212,7 @@ def list_groups(db: Session = Depends(get_db), user: User = Depends(get_current_
             "name": group.name,
             "description": group.description,
             "color": group.color,
+            "session_count": len(group.sessions),
             "created_at": group.created_at.isoformat(),
         }
         for group in session_service.list_groups(db, user.id)
@@ -222,6 +223,24 @@ def list_groups(db: Session = Depends(get_db), user: User = Depends(get_current_
 def create_group(payload: GroupCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
     group = session_service.create_group(db, payload.name, payload.description, payload.color, user.id)
     return {"id": group.id, "name": group.name, "description": group.description, "color": group.color, "created_at": group.created_at.isoformat()}
+
+
+@router.put("/groups/{group_id}")
+def update_group(group_id: int, payload: GroupCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    try:
+        group = session_service.update_group(db, group_id, payload.name, payload.description, payload.color, user.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"id": group.id, "name": group.name, "description": group.description, "color": group.color, "created_at": group.created_at.isoformat()}
+
+
+@router.delete("/groups/{group_id}")
+def delete_group(group_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, bool]:
+    try:
+        session_service.delete_group(db, group_id, user.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"ok": True}
 
 
 @router.post("/move")

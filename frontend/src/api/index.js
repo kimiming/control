@@ -60,6 +60,8 @@ export const exportAllSessions = () => api.get('/sessions/export', { responseTyp
 export const exportSessions = (sessionIds) => api.post('/sessions/export', { session_ids: sessionIds }, { responseType: 'blob', timeout: 0 }).then(parseSessionExport);
 export const getGroups = () => api.get('/sessions/groups').then((res) => res.data);
 export const createGroup = (data) => api.post('/sessions/groups', data).then((res) => res.data);
+export const updateGroup = (id, data) => api.put(`/sessions/groups/${id}`, data).then((res) => res.data);
+export const deleteGroup = (id) => api.delete(`/sessions/groups/${id}`).then((res) => res.data);
 export const moveSessions = (data) => api.post('/sessions/move', data).then((res) => res.data);
 export const moveSessionsToAgent = (data) => api.post('/sessions/move-agent', data).then((res) => res.data);
 export const moveSessionsToProxy = (data) => api.post('/sessions/move-proxy', data).then((res) => res.data);

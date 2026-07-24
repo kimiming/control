@@ -22,6 +22,7 @@ from app.core.database import SessionLocal
 from app.models.customer import Customer
 from app.models.message import Message
 from app.models.session import SessionGroup, SessionLog, SessionStatus, SessionTaskLog, TelegramSession
+from app.models.task import MarketingTask
 from app.services.proxy_service import proxy_service
 from app.services.target_parser import parse_targets
 from app.services.websocket_manager import session_ws_manager
@@ -424,10 +425,51 @@ class SessionService:
         }
 
     def create_group(self, db: Session, name: str, description: str | None = None, color: str = "blue", owner_id: int | None = None) -> SessionGroup:
-        group = SessionGroup(owner_id=owner_id, name=name, description=description, color=color or "blue")
+        group = SessionGroup(owner_id=owner_id, name=name.strip(), description=description, color=color or "blue")
         db.add(group)
         db.commit()
         db.refresh(group)
+        return group
+
+    def update_group(
+        self,
+        db: Session,
+        group_id: int,
+        name: str,
+        description: str | None = None,
+        color: str = "blue",
+        owner_id: int | None = None,
+    ) -> SessionGroup:
+        group = self._get_group(db, group_id, owner_id)
+        group.name = name.strip()
+        group.description = description
+        group.color = color or "blue"
+        db.commit()
+        db.refresh(group)
+        return group
+
+    def delete_group(self, db: Session, group_id: int, owner_id: int | None = None) -> None:
+        group = self._get_group(db, group_id, owner_id)
+        db.execute(
+            TelegramSession.__table__.update()
+            .where(TelegramSession.group_id == group.id)
+            .values(group_id=None)
+        )
+        db.execute(
+            MarketingTask.__table__.update()
+            .where(MarketingTask.session_group_id == group.id)
+            .values(session_group_id=None)
+        )
+        db.delete(group)
+        db.commit()
+
+    def _get_group(self, db: Session, group_id: int, owner_id: int | None = None) -> SessionGroup:
+        stmt = select(SessionGroup).where(SessionGroup.id == group_id)
+        if owner_id is not None:
+            stmt = stmt.where(SessionGroup.owner_id == owner_id)
+        group = db.scalar(stmt)
+        if not group:
+            raise ValueError("Session group not found")
         return group
 
     async def move_sessions(self, db: Session, session_ids: list[int], group_id: int | None, owner_id: int | None = None) -> int:

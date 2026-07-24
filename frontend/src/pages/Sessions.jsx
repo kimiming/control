@@ -9,6 +9,7 @@ import {
   createSession,
   connectSessions,
   deleteSession,
+  deleteGroup,
   disconnectSessions,
   exportAllSessions,
   exportSessions,
@@ -33,6 +34,7 @@ import {
   clearBatchSessionContacts,
   importBatchSessionContacts,
   updateSession,
+  updateGroup,
 } from '../api/index.js';
 import SessionList from '../components/Sessions/SessionList.jsx';
 import SessionModal from '../components/Sessions/SessionModal.jsx';
@@ -153,7 +155,9 @@ export default function Sessions() {
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [selectedRowKeys, setSelectedRowKeys] = useState([]);
-  const [groupModalOpen, setGroupModalOpen] = useState(false);
+  const [groupsOpen, setGroupsOpen] = useState(false);
+  const [groupEditorOpen, setGroupEditorOpen] = useState(false);
+  const [editingGroup, setEditingGroup] = useState(null);
   const [moveGroupId, setMoveGroupId] = useState(null);
   const [moveAgentId, setMoveAgentId] = useState(null);
   const [moveProxyId, setMoveProxyId] = useState(null);
@@ -471,12 +475,25 @@ export default function Sessions() {
   });
 
   const groupMutation = useMutation({
-    mutationFn: createGroup,
+    mutationFn: (values) => (editingGroup ? updateGroup(editingGroup.id, values) : createGroup(values)),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['session-groups'] });
-      setGroupModalOpen(false);
+      setGroupEditorOpen(false);
+      setEditingGroup(null);
       groupForm.resetFields();
+      message.success('分组已保存');
     },
+    onError: (error) => message.error(error?.response?.data?.detail || error.message),
+  });
+
+  const deleteGroupMutation = useMutation({
+    mutationFn: deleteGroup,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['session-groups'] });
+      queryClient.invalidateQueries({ queryKey: ['sessions'] });
+      message.success('分组已删除，原Session已移至未分组');
+    },
+    onError: (error) => message.error(error?.response?.data?.detail || error.message),
   });
 
   const moveMutation = useMutation({
@@ -860,12 +877,9 @@ export default function Sessions() {
           <Button
             className="session-action-button--red"
             icon={<TeamOutlined />}
-            onClick={() => {
-              groupForm.setFieldsValue({ color: 'blue' });
-              setGroupModalOpen(true);
-            }}
+            onClick={() => setGroupsOpen(true)}
           >
-            新建分组
+            分组管理
           </Button>
           <Button
             className="session-action-button--green"
@@ -1047,7 +1061,62 @@ export default function Sessions() {
           TXT每行一个手机号；号码按Session顺序分配且不会重复。未分配的剩余号码会在操作结束后自动导出为TXT。
         </div>
       </Modal>
-      <Modal title="新建分组" open={groupModalOpen} onCancel={() => setGroupModalOpen(false)} onOk={() => groupForm.submit()}>
+      <Modal title="Session分组管理" open={groupsOpen} onCancel={() => setGroupsOpen(false)} footer={null} width={720}>
+        <Button
+          type="primary"
+          icon={<UsergroupAddOutlined />}
+          style={{ marginBottom: 16 }}
+          onClick={() => {
+            setEditingGroup(null);
+            groupForm.resetFields();
+            groupForm.setFieldsValue({ color: 'blue' });
+            setGroupEditorOpen(true);
+          }}
+        >
+          新建分组
+        </Button>
+        <Table
+          rowKey="id"
+          pagination={false}
+          dataSource={groups}
+          columns={[
+            { title: '分组名称', dataIndex: 'name', render: (value, group) => <Tag color={group.color || 'blue'}>{value}</Tag> },
+            { title: 'Session数', dataIndex: 'session_count', width: 110 },
+            { title: '描述', dataIndex: 'description', render: (value) => value || '-' },
+            {
+              title: '操作',
+              width: 150,
+              render: (_, group) => (
+                <Space>
+                  <Button
+                    size="small"
+                    onClick={() => {
+                      setEditingGroup(group);
+                      groupForm.setFieldsValue(group);
+                      setGroupEditorOpen(true);
+                    }}
+                  >
+                    编辑
+                  </Button>
+                  <Popconfirm
+                    title="删除后组内Session将变为未分组，确认删除？"
+                    onConfirm={() => deleteGroupMutation.mutate(group.id)}
+                  >
+                    <Button size="small" danger>删除</Button>
+                  </Popconfirm>
+                </Space>
+              ),
+            },
+          ]}
+        />
+      </Modal>
+      <Modal
+        title={editingGroup ? '编辑Session分组' : '新建Session分组'}
+        open={groupEditorOpen}
+        onCancel={() => { setGroupEditorOpen(false); setEditingGroup(null); }}
+        onOk={() => groupForm.submit()}
+        confirmLoading={groupMutation.isPending}
+      >
         <Form form={groupForm} layout="vertical" onFinish={(values) => groupMutation.mutate(values)}>
           <Form.Item name="name" label="分组名称" rules={[{ required: true, message: '请输入分组名称' }]}>
             <Input maxLength={100} />
