@@ -5,6 +5,8 @@ APP_NAME="tg-marketing-system"
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="$PROJECT_DIR/backend/.env"
 ENV_EXAMPLE="$PROJECT_DIR/backend/.env.example"
+COMPOSE_ENV_FILE="$PROJECT_DIR/.env"
+COMPOSE_ENV_EXAMPLE="$PROJECT_DIR/.env.example"
 
 info() {
   printf '\033[1;34m[INFO]\033[0m %s\n' "$1"
@@ -49,6 +51,11 @@ install_docker_if_needed() {
 }
 
 prepare_env() {
+  if [ ! -f "$COMPOSE_ENV_FILE" ]; then
+    info "Creating .env from .env.example"
+    cp "$COMPOSE_ENV_EXAMPLE" "$COMPOSE_ENV_FILE"
+  fi
+
   if [ ! -f "$ENV_FILE" ]; then
     info "Creating backend/.env from backend/.env.example"
     cp "$ENV_EXAMPLE" "$ENV_FILE"
@@ -67,7 +74,7 @@ deploy() {
   fi
 
   info "Building and starting Docker services..."
-  sudo docker compose up -d --build
+  sudo --preserve-env=SESSION_WORKER_COUNT "$PROJECT_DIR/deploy/compose-up.sh"
 
   info "Service status:"
   sudo docker compose ps

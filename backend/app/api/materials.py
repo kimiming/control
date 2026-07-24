@@ -25,6 +25,10 @@ class BatchMovePayload(BaseModel):
     group_id: int | None = None
 
 
+class MaterialStatusPayload(BaseModel):
+    status: str = Field(pattern="^(active|disabled)$")
+
+
 router = APIRouter(prefix="/materials", tags=["materials"], dependencies=[Depends(require_any_menu_access("materials", "messages", "tasks"))])
 
 
@@ -33,6 +37,7 @@ def list_materials(
     material_type: str | None = Query(default=None, pattern="^(text|image|contact)$"),
     group_id: int | None = None,
     keyword: str | None = Query(default=None, max_length=200),
+    health_status: str | None = Query(default=None, pattern="^(active|suspected|disabled)$"),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> list[dict[str, Any]]:
@@ -42,6 +47,7 @@ def list_materials(
         owner_id=user.id,
         group_id=group_id,
         keyword=keyword,
+        health_status=health_status,
     )
     return [material_service.serialize_material(item) for item in materials]
 
@@ -141,6 +147,42 @@ def get_material(material_id: int, db: Session = Depends(get_db), user: User = D
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return material_service.serialize_material(material)
+
+
+@router.put("/{material_id}/health-status")
+def update_material_health_status(
+    material_id: int,
+    payload: MaterialStatusPayload,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    try:
+        material = material_service.set_health_status(db, material_id, payload.status, user.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404 if str(exc) == "Material not found" else 400, detail=str(exc)) from exc
+    return material_service.serialize_material(material)
+
+
+@router.get("/{material_id}/usage-logs")
+def material_usage_logs(
+    material_id: int,
+    limit: int = 100,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> list[dict[str, Any]]:
+    try:
+        logs = material_service.list_usage_logs(db, material_id, user.id, limit)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return [{
+        "id": item.id,
+        "task_id": item.task_id,
+        "session_id": item.session_id,
+        "target": item.target,
+        "result": item.result,
+        "error_message": item.error_message,
+        "created_at": item.created_at.isoformat() if item.created_at else None,
+    } for item in logs]
 
 
 @router.post("")

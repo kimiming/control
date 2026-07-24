@@ -345,7 +345,7 @@ class TaskQueue:
             session_finished = False
             try:
                 try:
-                    await task_service.process_session_job(job["task_id"], job["session_id"])
+                    cooldown_seconds = await task_service.process_session_job(job["task_id"], job["session_id"])
                     db = SessionLocal()
                     try:
                         task_row = db.get(MarketingTask, job["task_id"])
@@ -361,8 +361,11 @@ class TaskQueue:
                     finally:
                         db.close()
                     if has_more and task_is_active:
-                        await asyncio.sleep(random.uniform(task_delay_min or 0, task_delay_max or 0))
-                        await self._requeue_job(job)
+                        if cooldown_seconds:
+                            asyncio.create_task(self._requeue_after(job, cooldown_seconds))
+                        else:
+                            await asyncio.sleep(random.uniform(task_delay_min or 0, task_delay_max or 0))
+                            await self._requeue_job(job)
                 except SessionClientUnavailable:
                     await self._requeue_job(job)
                     retry_unavailable = True
@@ -375,6 +378,21 @@ class TaskQueue:
                 await self._retire_task_session(job["task_id"], job["session_id"])
             if retry_unavailable:
                 await asyncio.sleep(5)
+
+    async def _requeue_after(self, job: dict[str, int], delay_seconds: int) -> None:
+        await asyncio.sleep(max(delay_seconds, 1))
+        db = SessionLocal()
+        try:
+            task = db.get(MarketingTask, job["task_id"])
+            has_more = bool(db.scalar(select(TaskTarget.id).where(
+                TaskTarget.task_id == job["task_id"],
+                TaskTarget.session_id == job["session_id"],
+                TaskTarget.status == "queued",
+            ).limit(1)))
+            if task and task.status in {"queued", "running"} and has_more:
+                await self._requeue_job(job)
+        finally:
+            db.close()
 
     async def _renew_lock(self, key: str, token: str) -> None:
         interval = max(settings.task_session_lock_seconds // 3, 10)

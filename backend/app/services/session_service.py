@@ -34,6 +34,7 @@ settings = get_settings()
 class SessionService:
     _CONNECT_QUEUE_LOCK_SECONDS = 180
     _BIDIRECTIONAL_QUEUE_LOCK_SECONDS = 300
+    _CONTACT_SCAN_QUEUE_LOCK_SECONDS = 1800
 
     def __init__(self) -> None:
         # Keep strong references until completion; otherwise fire-and-forget
@@ -42,6 +43,8 @@ class SessionService:
         self._connect_semaphore = asyncio.Semaphore(max(settings.session_worker_count, 12))
         self._bidirectional_tasks: set[asyncio.Task[Any]] = set()
         self._bidirectional_semaphore = asyncio.Semaphore(max(settings.session_worker_count, 12))
+        self._contact_scan_tasks: set[asyncio.Task[Any]] = set()
+        self._contact_scan_semaphore = asyncio.Semaphore(max(settings.session_worker_count, 12))
 
     _SPAM_BOT_NORMAL_MARKERS = (
         "good news",
@@ -676,6 +679,8 @@ class SessionService:
         result = await session_command_bus.execute(session.id, "contacts_scan", timeout=40)
         session.contact_count = int(result.get("contact_count", 0))
         session.contacts_scanned_at = datetime.utcnow()
+        session.contact_scan_status = "success"
+        session.contact_scan_detail = None
         self.log(db, session.id, "contacts_scan", f"识别到 {session.contact_count} 个通讯录好友")
         db.commit()
         db.refresh(session)
@@ -720,6 +725,8 @@ class SessionService:
         owner_id: int | None = None,
         phones: list[str] | None = None,
     ) -> dict[str, Any]:
+        if action == "scan":
+            return await self.queue_contact_scans(db, session_ids, owner_id)
         sessions = self.get_sessions_by_ids(db, session_ids, owner_id)
         connection_errors = await self._auto_connect_sessions([session.id for session in sessions], owner_id)
         found_ids = {session.id for session in sessions}
@@ -758,6 +765,95 @@ class SessionService:
                 self.log(db, session.id, f"contacts_{action}_failed", str(exc)[:500])
                 db.commit()
         return summary
+
+    async def queue_contact_scans(
+        self,
+        db: Session,
+        session_ids: list[int],
+        owner_id: int | None = None,
+    ) -> dict[str, Any]:
+        unique_ids = list(dict.fromkeys(session_ids))
+        sessions = self.get_sessions_by_ids(db, unique_ids, owner_id)
+        found_ids = {session.id for session in sessions}
+        summary: dict[str, Any] = {
+            "requested": len(unique_ids),
+            "found": len(sessions),
+            "accepted": 0,
+            "accepted_ids": [],
+            "skipped": len(unique_ids) - len(found_ids),
+        }
+        for session in sessions:
+            lock_key = f"telegram:session:contacts-scan-pending:{session.id}"
+            lock_token = uuid.uuid4().hex
+            acquired = await redis_client.set(
+                lock_key,
+                lock_token,
+                nx=True,
+                ex=self._CONTACT_SCAN_QUEUE_LOCK_SECONDS,
+            )
+            if not acquired:
+                summary["skipped"] += 1
+                self.log(db, session.id, "contacts_scan_skipped", "通讯录识别任务已在执行")
+                db.commit()
+                continue
+            if await redis_client.exists(f"marketing:session_lock:{session.id}"):
+                await self._release_queue_lock(lock_key, lock_token)
+                summary["skipped"] += 1
+                self.log(db, session.id, "contacts_scan_skipped", "Session is busy sending a task")
+                db.commit()
+                continue
+
+            session.contact_scan_status = "queued"
+            session.contact_scan_detail = None
+            self.log(db, session.id, "contacts_scan_queued", "通讯录识别任务已进入后台队列")
+            db.commit()
+            db.refresh(session)
+            await self.publish_status(session, "contacts_scan_queued")
+
+            task = asyncio.create_task(
+                self._run_queued_contact_scan(session.id, owner_id, lock_key, lock_token),
+                name=f"contacts-scan-{session.id}",
+            )
+            self._contact_scan_tasks.add(task)
+            task.add_done_callback(self._contact_scan_tasks.discard)
+            summary["accepted"] += 1
+            summary["accepted_ids"].append(session.id)
+        return summary
+
+    async def _run_queued_contact_scan(
+        self,
+        session_id: int,
+        owner_id: int | None,
+        lock_key: str,
+        lock_token: str,
+    ) -> None:
+        try:
+            async with self._contact_scan_semaphore:
+                db = SessionLocal()
+                try:
+                    session = self._owned_session(db, session_id, owner_id)
+                    session.contact_scan_status = "scanning"
+                    db.commit()
+                    db.refresh(session)
+                    await self.publish_status(session, "contacts_scanning")
+
+                    if not await redis_client.exists(f"telegram:session:runtime:{session_id}"):
+                        await self.connect_session(db, session)
+                    await self.scan_contacts(db, session_id, owner_id)
+                except Exception as exc:
+                    db.rollback()
+                    session = db.get(TelegramSession, session_id)
+                    if session:
+                        session.contact_scan_status = "failed"
+                        session.contact_scan_detail = str(exc)[:1000]
+                        self.log(db, session.id, "contacts_scan_failed", str(exc)[:1000])
+                        db.commit()
+                        db.refresh(session)
+                        await self.publish_status(session, "contacts_updated")
+                finally:
+                    db.close()
+        finally:
+            await self._release_queue_lock(lock_key, lock_token)
 
     async def distribute_import_contacts(
         self,
@@ -939,6 +1035,8 @@ class SessionService:
             "last_bidirectional_check_at": session.last_bidirectional_check_at.isoformat() if session.last_bidirectional_check_at else None,
             "contact_count": session.contact_count,
             "contacts_scanned_at": session.contacts_scanned_at.isoformat() if session.contacts_scanned_at else None,
+            "contact_scan_status": session.contact_scan_status or "idle",
+            "contact_scan_detail": session.contact_scan_detail,
             "group_id": session.group_id,
             "group_name": session.group.name if session.group else None,
             "group_color": session.group.color if session.group else None,

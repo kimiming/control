@@ -898,7 +898,11 @@ export default function Tasks() {
             style={{ width: 140 }}
             value={logStatus}
             onChange={(value) => { setLogStatus(value); setLogPage(1); }}
-            options={[{ value: 'success', label: '成功' }, { value: 'failed', label: '失败' }]}
+            options={[
+              { value: 'success', label: '成功' },
+              { value: 'failed', label: '失败' },
+              { value: 'throttled', label: '限流重试' },
+            ]}
           />
           <Input.Search
             allowClear
@@ -938,7 +942,22 @@ export default function Tasks() {
               title: '发送结果',
               dataIndex: 'status',
               width: 110,
-              render: (value) => <Tag color={value === 'success' ? 'green' : 'red'}>{value === 'success' ? '成功' : '失败'}</Tag>,
+              render: (value) => (
+                <Tag color={value === 'success' ? 'green' : value === 'throttled' ? 'orange' : 'red'}>
+                  {value === 'success' ? '成功' : value === 'throttled' ? '限流重试' : '失败'}
+                </Tag>
+              ),
+            },
+            {
+              title: '失败原因',
+              dataIndex: 'failure_reason',
+              width: 320,
+              ellipsis: true,
+              render: (value, log) => (
+                ['failed', 'throttled'].includes(log.status)
+                  ? <Typography.Text type="danger">{value || '未知原因'}</Typography.Text>
+                  : '-'
+              ),
             },
             { title: '发送详情', dataIndex: 'message', ellipsis: true, render: (value) => value || '-' },
             {

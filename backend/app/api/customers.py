@@ -28,10 +28,11 @@ def list_customers(
     keyword: str | None = None,
     reply_status: str | None = None,
     is_favorite: bool | None = None,
+    source: str | None = None,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> list[dict[str, Any]]:
-    return customer_service.list_customers(db, kf_id, keyword, reply_status, is_favorite, user.id)
+    return customer_service.list_customers(db, kf_id, keyword, reply_status, is_favorite, user.id, source)
 
 
 @router.get("/conversations")
@@ -42,11 +43,12 @@ def list_conversations(
     keyword: str | None = None,
     reply_status: str | None = None,
     is_favorite: bool | None = None,
+    source: str | None = None,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> dict[str, Any]:
     return customer_service.list_customer_page(
-        db, max(page, 1), min(max(page_size, 10), 50), kf_id, keyword, reply_status, is_favorite, user.id
+        db, max(page, 1), min(max(page_size, 10), 50), kf_id, keyword, reply_status, is_favorite, user.id, source
     )
 
 
@@ -55,19 +57,26 @@ def conversation_counts(
     kf_id: int | None = None,
     keyword: str | None = None,
     reply_status: str | None = None,
+    source: str | None = None,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> dict[str, int]:
-    return customer_service.count_customer_conversations(db, kf_id, keyword, reply_status, user.id)
+    return customer_service.count_customer_conversations(db, kf_id, keyword, reply_status, user.id, source)
 
 
 @router.put("/{customer_id}/favorite")
-def update_customer_favorite(customer_id: int, payload: FavoritePayload, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+def update_customer_favorite(
+    customer_id: int,
+    payload: FavoritePayload,
+    source: str | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
     try:
-        customer = customer_service.set_favorite(db, customer_id, payload.is_favorite, user.id)
+        customer = customer_service.set_favorite(db, customer_id, payload.is_favorite, user.id, source)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return customer_service.serialize_customer(db, customer)
+    return customer_service.serialize_customer(db, customer, source=source)
 
 
 @router.get("/{customer_id}/messages")
@@ -75,12 +84,13 @@ async def list_customer_messages(
     customer_id: int,
     page_size: int = 20,
     before_id: int | None = None,
+    source: str | None = None,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> dict[str, Any]:
     try:
         return await customer_service.list_messages_page(
-            db, customer_id, min(max(page_size, 10), 50), before_id, user.id
+            db, customer_id, min(max(page_size, 10), 50), before_id, user.id, source
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

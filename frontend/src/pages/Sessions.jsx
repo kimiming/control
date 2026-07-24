@@ -168,13 +168,14 @@ export default function Sessions() {
   const [manualRefreshing, setManualRefreshing] = useState(false);
   const [batchConnectingIds, setBatchConnectingIds] = useState([]);
   const [batchBidirectionalIds, setBatchBidirectionalIds] = useState([]);
+  const [batchContactScanIds, setBatchContactScanIds] = useState([]);
   const [groupForm] = Form.useForm();
 
   const { data: sessionPage, isLoading, isFetching: sessionsFetching, refetch: refreshSessions } = useQuery({
     queryKey: ['sessions', filters, pagination.current, pagination.pageSize],
     queryFn: () => getSessions({ ...filters, page: pagination.current, page_size: pagination.pageSize }),
     placeholderData: (previousData) => previousData,
-    refetchInterval: (batchConnectingIds.length || batchBidirectionalIds.length) ? 3000 : false,
+    refetchInterval: (batchConnectingIds.length || batchBidirectionalIds.length || batchContactScanIds.length) ? 3000 : false,
   });
   const sessions = sessionPage?.items || [];
   const sessionTotal = sessionPage?.total || 0;
@@ -182,7 +183,7 @@ export default function Sessions() {
     queryKey: ['session-runtime'],
     queryFn: getSessionRuntime,
     refetchInterval: (query) => query.state.fetchStatus !== 'fetching'
-      ? ((batchConnectingIds.length || batchBidirectionalIds.length) ? 3000 : 10000)
+      ? ((batchConnectingIds.length || batchBidirectionalIds.length || batchContactScanIds.length) ? 3000 : 10000)
       : false,
   });
   const sessionsWithRuntime = useMemo(() => {
@@ -242,6 +243,32 @@ export default function Sessions() {
       counts,
     };
   }, [batchBidirectionalIds, sessionRuntime]);
+  const batchContactScanProgress = useMemo(() => {
+    const runtimeById = new Map(sessionRuntime.map((item) => [item.id, item]));
+    let success = 0;
+    let failed = 0;
+    let totalContacts = 0;
+    batchContactScanIds.forEach((id) => {
+      const item = runtimeById.get(id);
+      if (item?.contact_scan_status === 'success') {
+        success += 1;
+        totalContacts += item.contact_count || 0;
+      } else if (item?.contact_scan_status === 'failed') {
+        failed += 1;
+      }
+    });
+    const total = batchContactScanIds.length;
+    const finished = success + failed;
+    return {
+      total,
+      success,
+      failed,
+      totalContacts,
+      finished,
+      pending: Math.max(total - finished, 0),
+      percent: total ? Math.round((finished / total) * 100) : 0,
+    };
+  }, [batchContactScanIds, sessionRuntime]);
   const { data: groups = [] } = useQuery({ queryKey: ['session-groups'], queryFn: getGroups });
   const { data: supportAgents = [] } = useQuery({ queryKey: ['support-agents'], queryFn: getSupportAgents });
   const { data: proxies = [] } = useQuery({ queryKey: ['proxies'], queryFn: getProxies });
@@ -551,11 +578,31 @@ export default function Sessions() {
     },
     onSuccess: (data, action) => {
       queryClient.invalidateQueries({ queryKey: ['sessions'] });
-      const text = `${action === 'scan' ? '批量识别' : '批量清空'}完成：成功 ${data.success} 个，失败 ${data.failed} 个`;
-      Modal.info({ title: action === 'scan' ? '批量识别通讯录结果' : '批量清空通讯录结果', content: `${text}。失败详情请查看操作日志。` });
+      if (action === 'scan') {
+        const acceptedIds = data.accepted_ids || [];
+        const acceptedSet = new Set(acceptedIds);
+        queryClient.setQueryData(['session-runtime'], (old = []) => old.map((item) => (
+          acceptedSet.has(item.id) ? { ...item, contact_scan_status: 'queued', contact_scan_detail: null } : item
+        )));
+        setBatchContactScanIds(acceptedIds);
+        queryClient.invalidateQueries({ queryKey: ['session-runtime'] });
+        setSelectedRowKeys([]);
+        message.success(`通讯录识别已进入后台：提交 ${data.accepted} 个，跳过 ${data.skipped} 个`, 6);
+        return;
+      }
+      const text = `批量清空完成：成功 ${data.success} 个，失败 ${data.failed} 个`;
+      Modal.info({ title: '批量清空通讯录结果', content: `${text}。失败详情请查看操作日志。` });
     },
     onError: (error) => message.error(error?.response?.data?.detail || error.message || '批量通讯录操作失败'),
   });
+
+  useEffect(() => {
+    if (!batchContactScanProgress.total || batchContactScanProgress.pending) return;
+    const text = `识别 ${batchContactScanProgress.total} 个Session；成功 ${batchContactScanProgress.success} 个，失败 ${batchContactScanProgress.failed} 个，通讯录好友合计 ${batchContactScanProgress.totalContacts} 个`;
+    Modal.info({ title: '批量识别通讯录完成', content: `${text}。失败详情请查看操作日志。`, width: 620 });
+    setBatchContactScanIds([]);
+    queryClient.invalidateQueries({ queryKey: ['sessions'] });
+  }, [batchContactScanProgress, queryClient]);
 
   const contactImportMutation = useMutation({
     mutationFn: () => {
@@ -696,6 +743,15 @@ export default function Sessions() {
           style={{ marginBottom: 12 }}
         />
       )}
+      {batchContactScanProgress.total > 0 && (
+        <Alert
+          showIcon
+          type={batchContactScanProgress.failed ? 'warning' : 'info'}
+          message={`后台通讯录识别：${batchContactScanProgress.finished}/${batchContactScanProgress.total} 已完成，${batchContactScanProgress.pending} 个处理中${batchContactScanProgress.failed ? `，${batchContactScanProgress.failed} 个失败` : ''}`}
+          description={<Progress percent={batchContactScanProgress.percent} status={batchContactScanProgress.failed ? 'exception' : 'active'} />}
+          style={{ marginBottom: 12 }}
+        />
+      )}
       <Card size="small" className="filter-card" title="搜索筛选">
         <Space wrap>
           <Input.Search
@@ -823,7 +879,7 @@ export default function Sessions() {
           <Button
             className="session-action-button--blue"
             icon={<SearchOutlined />}
-            disabled={!selectedRowKeys.length || batchContactMutation.isPending}
+            disabled={!selectedRowKeys.length || batchContactMutation.isPending || batchContactScanIds.length > 0}
             loading={batchContactMutation.isPending && batchContactMutation.variables === 'scan'}
             onClick={() => batchContactMutation.mutate('scan')}
           >

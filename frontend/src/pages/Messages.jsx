@@ -30,6 +30,37 @@ const statusText = {
   error: '异常',
 };
 
+const sessionStatusColor = {
+  connected: 'green',
+  connecting: 'blue',
+  disconnected: 'default',
+  error: 'red',
+};
+
+const bidirectionalColor = {
+  unchecked: 'default',
+  checking: 'processing',
+  normal: 'green',
+  blocked: 'red',
+  restricted: 'red',
+  unknown: 'blue',
+  timeout: 'orange',
+  unauthorized: 'gold',
+  error: 'red',
+};
+
+const bidirectionalText = {
+  unchecked: '未检测',
+  checking: '检测中',
+  normal: '正常（非双向号）',
+  blocked: '账号已封禁',
+  restricted: '疑似双向号',
+  unknown: '返回文案未识别',
+  timeout: '检测超时',
+  unauthorized: '未授权',
+  error: '检测异常',
+};
+
 const materialTypeMeta = {
   text: { label: '文字', color: 'blue' },
   image: { label: '图片', color: 'green' },
@@ -55,6 +86,7 @@ export default function Messages() {
   const [kfId, setKfId] = useState();
   const [replyStatus, setReplyStatus] = useState();
   const [chatTab, setChatTab] = useState('all');
+  const [messageScope, setMessageScope] = useState('all');
   const customerListRef = useRef(null);
   const chatMessagesRef = useRef(null);
   const [customerListHeight, setCustomerListHeight] = useState(400);
@@ -73,8 +105,9 @@ export default function Messages() {
     if (keyword) params.keyword = keyword;
     if (kfId) params.kf_id = kfId;
     if (replyStatus) params.reply_status = replyStatus;
+    if (messageScope === 'task') params.source = 'task';
     return params;
-  }, [keyword, kfId, replyStatus]);
+  }, [keyword, kfId, replyStatus, messageScope]);
 
   const customerParams = useMemo(() => {
     const params = { ...conversationFilterParams };
@@ -115,8 +148,12 @@ export default function Messages() {
   );
 
   const messageQuery = useInfiniteQuery({
-    queryKey: ['customer-messages', selectedCustomer?.id],
-    queryFn: ({ pageParam }) => getCustomerMessages(selectedCustomer.id, { page_size: 20, before_id: pageParam || undefined }),
+    queryKey: ['customer-messages', selectedCustomer?.id, messageScope],
+    queryFn: ({ pageParam }) => getCustomerMessages(selectedCustomer.id, {
+      page_size: 20,
+      before_id: pageParam || undefined,
+      source: messageScope === 'task' ? 'task' : undefined,
+    }),
     initialPageParam: null,
     getNextPageParam: (lastPage) => lastPage.has_more ? lastPage.next_before_id : undefined,
     enabled: Boolean(selectedCustomer?.id),
@@ -168,7 +205,11 @@ export default function Messages() {
   });
 
   const favoriteMutation = useMutation({
-    mutationFn: ({ id, isFavorite }) => updateCustomerFavorite(id, isFavorite),
+    mutationFn: ({ id, isFavorite }) => updateCustomerFavorite(
+      id,
+      isFavorite,
+      messageScope === 'task' ? 'task' : undefined,
+    ),
     onSuccess: (customer) => {
       queryClient.invalidateQueries({ queryKey: ['customers'] });
       if (selectedCustomer?.id === customer.id) {
@@ -281,6 +322,20 @@ export default function Messages() {
   return (
     <div className="page customer-workbench">
       <aside className="customer-sidebar">
+        <Radio.Group
+          block
+          optionType="button"
+          buttonStyle="solid"
+          value={messageScope}
+          onChange={(event) => {
+            setMessageScope(event.target.value);
+            setSelected(null);
+          }}
+          options={[
+            { label: '全部消息', value: 'all' },
+            { label: '项目发送', value: 'task' },
+          ]}
+        />
         <Select
           value={kfId || 0}
           options={agentOptions}
@@ -403,15 +458,17 @@ export default function Messages() {
                   客服: {selectedCustomer.kf_name || '未绑定'} / Session: {selectedCustomer.assigned_session_name || '-'}
                 </Typography.Text>
               </div>
-              <Tooltip title={selectedCustomer.is_favorite ? '取消收藏' : '收藏为意向用户'}>
-                <Button
-                  className={selectedCustomer.is_favorite ? 'favorite-button active' : 'favorite-button'}
-                  icon={selectedCustomer.is_favorite ? <StarFilled /> : <StarOutlined />}
-                  onClick={(event) => toggleFavorite(selectedCustomer, event)}
-                >
-                  {selectedCustomer.is_favorite ? '已收藏' : '收藏意向用户'}
-                </Button>
-              </Tooltip>
+              <Space>
+                <Tooltip title={selectedCustomer.is_favorite ? '取消收藏' : '收藏为意向用户'}>
+                  <Button
+                    className={selectedCustomer.is_favorite ? 'favorite-button active' : 'favorite-button'}
+                    icon={selectedCustomer.is_favorite ? <StarFilled /> : <StarOutlined />}
+                    onClick={(event) => toggleFavorite(selectedCustomer, event)}
+                  >
+                    {selectedCustomer.is_favorite ? '已收藏' : '收藏意向用户'}
+                  </Button>
+                </Tooltip>
+              </Space>
             </div>
             <div className="chat-messages" ref={chatMessagesRef} onScroll={loadOlderMessages}>
               {messageQuery.isFetchingNextPage ? <div className="chat-history-status">正在加载更早消息…</div> : null}
@@ -487,7 +544,15 @@ export default function Messages() {
             <div className="customer-info-card"><Typography.Text type="secondary">发送状态</Typography.Text><Tag color={statusColor[selectedCustomer.send_status]}>{statusText[selectedCustomer.send_status] || selectedCustomer.send_status}</Tag></div>
             <div className="customer-info-card"><Typography.Text type="secondary">回复状态</Typography.Text><Tag color={statusColor[selectedCustomer.reply_status]}>{statusText[selectedCustomer.reply_status] || selectedCustomer.reply_status}</Tag></div>
             <div className="customer-info-card"><Typography.Text type="secondary">所属 Session</Typography.Text><strong>{selectedCustomer.assigned_session_name || '-'}</strong></div>
-            <div className="customer-info-card"><Typography.Text type="secondary">Session 状态</Typography.Text><strong>{statusText[selectedCustomer.assigned_session_status] || selectedCustomer.assigned_session_status || '-'}</strong></div>
+            <div className="customer-info-card"><Typography.Text type="secondary">Session 状态</Typography.Text><Tag color={sessionStatusColor[selectedCustomer.assigned_session_status] || 'default'}>{statusText[selectedCustomer.assigned_session_status] || selectedCustomer.assigned_session_status || '-'}</Tag></div>
+            <div className="customer-info-card">
+              <Typography.Text type="secondary">双向号状态</Typography.Text>
+              <Tooltip title={selectedCustomer.assigned_session_bidirectional_detail || '尚未进行双向号检测'}>
+                <Tag color={bidirectionalColor[selectedCustomer.assigned_session_bidirectional_status] || 'default'}>
+                  {bidirectionalText[selectedCustomer.assigned_session_bidirectional_status] || selectedCustomer.assigned_session_bidirectional_status || '未检测'}
+                </Tag>
+              </Tooltip>
+            </div>
             <div className="customer-info-card"><Typography.Text type="secondary">最近消息</Typography.Text><strong>{selectedCustomer.last_message_at ? dayjs(selectedCustomer.last_message_at).format('YYYY-MM-DD HH:mm:ss') : '-'}</strong></div>
             <div className="customer-info-card"><Typography.Text type="secondary">备注</Typography.Text><strong>{selectedCustomer.remark || '-'}</strong></div>
           </Space>

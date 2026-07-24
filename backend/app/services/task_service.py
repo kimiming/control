@@ -247,6 +247,11 @@ class TaskService:
                 "target_customer": log.target_phone,
                 "status": log.status,
                 "message": log.message,
+                "failure_reason": (
+                    log.message.split("：", 1)[1]
+                    if log.status in {"failed", "throttled"} and log.message and "：" in log.message
+                    else (log.message if log.status in {"failed", "throttled"} else None)
+                ),
                 "sent_at": log.created_at.isoformat() if log.created_at else None,
             }
             for log, session in db.execute(stmt).all()
@@ -608,7 +613,7 @@ class TaskService:
             status="pending",
         ))
 
-    async def process_session_job(self, task_id: int, session_id: int) -> None:
+    async def process_session_job(self, task_id: int, session_id: int) -> int | None:
         """Use one Telegram connection to process every queued target assigned to a Session."""
         from app.core.database import SessionLocal
         from app.services.incoming_listener import incoming_message_listener
@@ -709,10 +714,18 @@ class TaskService:
                 db.commit()
                 send_interval_min = task.send_interval_min or 0
                 send_interval_max = task.send_interval_max or 0
+                payloads = None
                 try:
                     payload_data = json.loads(item.payload_json) if item.payload_json else None
                     contact_data = payload_data.get("contact") if isinstance(payload_data, dict) else None
                     payloads = payload_data.get("materials") if isinstance(payload_data, dict) else payload_data
+                    payloads = self._replace_disabled_materials(db, task, payloads)
+                    if isinstance(payload_data, dict):
+                        payload_data["materials"] = payloads
+                        item.payload_json = json.dumps(payload_data, ensure_ascii=False)
+                    elif payloads is not None:
+                        item.payload_json = json.dumps(payloads, ensure_ascii=False)
+                    db.commit()
                     if (task.target_source or "imported") == "contacts" and not contact_data:
                         continue
                     display_target = contact_data.get("display") if contact_data else item.target
@@ -763,20 +776,24 @@ class TaskService:
                     outbound_payloads = payloads or [{"content": task.content, "image_path": task.image_path, "contact_card": task.contact_card}]
                     message_ids = sent_meta.get("message_ids") or []
                     for payload_index, payload in enumerate(outbound_payloads):
-                        db.add(Message(
-                            session_id=session.id,
-                            chat_id=customer.tg_id or item.target,
-                            telegram_message_id=message_ids[payload_index] if payload_index < len(message_ids) else None,
-                            sender=session.username,
-                            content=payload["content"] or self._contact_card_message(payload["contact_card"]),
-                            image_path=payload["image_path"],
-                            direction="outbound",
-                            read_status="sent",
-                        ))
+                        self._record_task_message(
+                            db, task, session, customer.tg_id or item.target,
+                            message_ids[payload_index] if payload_index < len(message_ids) else None,
+                            payload["content"] or self._contact_card_message(payload["contact_card"]),
+                            payload["image_path"],
+                        )
                     item.status = "success"
                     item.error_message = None
                     item.finished_at = datetime.utcnow()
                     self._log_session_task(db, session.id, task, display_target, "success", "后台队列发送成功")
+                    material_service.record_usage(
+                        db,
+                        self._payload_material_ids(payloads),
+                        task_id=task.id,
+                        session_id=session.id,
+                        target=display_target,
+                        result="success",
+                    )
                     db.execute(update(MarketingTask).where(MarketingTask.id == task.id).values(sent_count=MarketingTask.sent_count + 1))
                     db.commit()
                 except Exception as exc:
@@ -789,6 +806,34 @@ class TaskService:
                         db.close()
                         break
                     error = self._translate_send_error(exc)
+                    if self._is_transient_rate_limit(exc) and item.attempt_count < 3:
+                        cooldown_seconds = min(60 * (2 ** max(item.attempt_count - 1, 0)), 900)
+                        item.status = "queued"
+                        item.error_message = f"Session瞬时限流，冷却 {cooldown_seconds} 秒后自动重试"
+                        item.started_at = None
+                        item.finished_at = None
+                        self._log_session_task(
+                            db,
+                            session.id,
+                            task,
+                            item.target,
+                            "throttled",
+                            f"瞬时限流：{error}；冷却 {cooldown_seconds} 秒后自动重试",
+                        )
+                        db.commit()
+                        return cooldown_seconds
+                    material_failure, immediate_disable = self._classify_material_failure(exc)
+                    if material_failure:
+                        material_service.record_usage(
+                            db,
+                            self._payload_material_ids(payloads),
+                            task_id=task.id,
+                            session_id=session.id,
+                            target=item.target,
+                            result="failed",
+                            error=error,
+                            immediate_disable=immediate_disable,
+                        )
                     item.status = "failed"
                     item.error_message = error[:2000]
                     item.finished_at = datetime.utcnow()
@@ -1020,17 +1065,11 @@ class TaskService:
                     outbound_payloads = payloads or [{"content": task.content, "image_path": task.image_path, "contact_card": task.contact_card}]
                     sent_message_ids = sent_meta.get("message_ids") or []
                     for payload_index, payload in enumerate(outbound_payloads):
-                        db.add(
-                            Message(
-                                session_id=session.id,
-                                chat_id=customer.tg_id or target,
-                                telegram_message_id=sent_message_ids[payload_index] if payload_index < len(sent_message_ids) else None,
-                                sender=session.username,
-                                content=payload["content"] or self._contact_card_message(payload["contact_card"]),
-                                image_path=payload["image_path"],
-                                direction="outbound",
-                                read_status="sent",
-                            )
+                        self._record_task_message(
+                            db, task, session, customer.tg_id or target,
+                            sent_message_ids[payload_index] if payload_index < len(sent_message_ids) else None,
+                            payload["content"] or self._contact_card_message(payload["contact_card"]),
+                            payload["image_path"],
                         )
                     session_sent_counts[session.id] = session_sent_counts.get(session.id, 0) + 1
                     task.sent_count += 1
@@ -1315,7 +1354,10 @@ class TaskService:
     def _validate_material_group(self, db: Session, group_id: int | None, owner_id: int | None) -> list[Material]:
         if group_id is None:
             raise ValueError("Material group is required")
-        materials = material_service.list_group_materials(db, group_id, owner_id)
+        materials = [
+            material for material in material_service.list_group_materials(db, group_id, owner_id)
+            if (material.health_status or "active") != "disabled"
+        ]
         if not materials:
             raise ValueError("Selected material group is empty")
         for material in materials:
@@ -1331,12 +1373,12 @@ class TaskService:
                 raise ValueError(f"Material '{material.name}' has an unsupported type")
         return materials
 
-    def _material_payload(self, material: Material) -> dict[str, str | None]:
+    def _material_payload(self, material: Material) -> dict[str, Any]:
         if material.material_type == "text":
-            return {"content": material.content or "", "image_path": None, "contact_card": None}
+            return {"material_ids": [material.id], "content": material.content or "", "image_path": None, "contact_card": None}
         if material.material_type == "image":
-            return {"content": "", "image_path": material.file_path, "contact_card": None}
-        return {"content": "", "image_path": None, "contact_card": material.content}
+            return {"material_ids": [material.id], "content": "", "image_path": material.file_path, "contact_card": None}
+        return {"material_ids": [material.id], "content": "", "image_path": None, "contact_card": material.content}
 
     def _validate_concat_groups(
         self,
@@ -1352,7 +1394,9 @@ class TaskService:
             text_materials = [
                 material
                 for material in material_service.list_group_materials(db, group.id, owner_id)
-                if material.material_type == "text" and (material.content or "").strip()
+                if material.material_type == "text"
+                and (material.content or "").strip()
+                and (material.health_status or "active") != "disabled"
             ]
             if not text_materials:
                 raise ValueError(f"Material group '{group.name}' has no usable text material")
@@ -1362,10 +1406,10 @@ class TaskService:
             raise ValueError("Concat result may exceed Telegram's 4096-character message limit")
         return material_groups
 
-    def _concat_payload(self, material_groups: list[list[Material]]) -> dict[str, str | None]:
+    def _concat_payload(self, material_groups: list[list[Material]]) -> dict[str, Any]:
         selected = [self._weighted_random_choice(materials) for materials in material_groups]
         content = "".join((material.content or "").strip() for material in selected)
-        return {"content": content, "image_path": None, "contact_card": None}
+        return {"material_ids": [material.id for material in selected], "content": content, "image_path": None, "contact_card": None}
 
     def _weighted_random_choice(self, materials: list[Material]) -> Material:
         weights = [max(material.priority, 0) + 1 for material in materials]
@@ -1400,6 +1444,68 @@ class TaskService:
             ordered.append(selected)
             remaining.remove(selected)
         return ordered
+
+    def _payload_material_ids(self, payloads: list[dict[str, Any]] | None) -> list[int]:
+        material_ids: list[int] = []
+        for payload in payloads or []:
+            for raw_id in payload.get("material_ids") or []:
+                try:
+                    material_id = int(raw_id)
+                except (TypeError, ValueError):
+                    continue
+                if material_id not in material_ids:
+                    material_ids.append(material_id)
+        return material_ids
+
+    def _replace_disabled_materials(
+        self,
+        db: Session,
+        task: MarketingTask,
+        payloads: list[dict[str, Any]] | None,
+    ) -> list[dict[str, Any]] | None:
+        material_ids = self._payload_material_ids(payloads)
+        if not material_ids:
+            return payloads
+        materials = list(db.scalars(select(Material).where(Material.id.in_(material_ids))).all())
+        if len(materials) == len(material_ids) and all((item.health_status or "active") != "disabled" for item in materials):
+            return payloads
+        if task.send_type == "concat":
+            groups = self._validate_concat_groups(
+                db,
+                self._deserialize_group_ids(task.material_group_ids),
+                task.owner_id,
+            )
+            return [self._concat_payload(groups)]
+        if task.send_type == "group":
+            available = self._validate_material_group(db, task.material_group_id, task.owner_id)
+            return [self._material_payload(self._weighted_random_choice(available))]
+        return payloads
+
+    def _classify_material_failure(self, exc: Exception) -> tuple[bool, bool]:
+        raw = str(exc).upper()
+        immediate_markers = (
+            "NO SUCH FILE",
+            "FILE NOT FOUND",
+            "FILENOTFOUNDERROR",
+            "IS A DIRECTORY",
+            "PERMISSION DENIED",
+        )
+        material_markers = (
+            "MEDIA_INVALID",
+            "PHOTO_INVALID",
+            "PHOTO_EXT_INVALID",
+            "PHOTO_CONTENT_TYPE_INVALID",
+            "FILE_PART",
+            "IMAGE_PROCESS_FAILED",
+            "MESSAGE_TOO_LONG",
+            "MEDIA_CAPTION_TOO_LONG",
+            "CONTACT CARD PHONE NUMBER AND FIRST NAME ARE REQUIRED",
+        )
+        if isinstance(exc, (FileNotFoundError, IsADirectoryError, PermissionError)) or any(marker in raw for marker in immediate_markers):
+            return True, True
+        if any(marker in raw for marker in material_markers):
+            return True, False
+        return False, False
 
     async def _send_contact_card(self, client: Any, entity: Any, contact_card: str) -> Any:
         card = self._load_contact_card(contact_card)
@@ -1530,6 +1636,10 @@ class TaskService:
         )
         return any(marker in message for marker in restricted_markers)
 
+    def _is_transient_rate_limit(self, exc: Exception) -> bool:
+        message = str(exc).upper()
+        return "TOO MANY REQUESTS" in message and "SENDMEDIAREQUEST" in message
+
     def _translate_send_error(self, exc: Exception | str) -> str:
         raw = str(exc).strip()
         upper = raw.upper()
@@ -1640,6 +1750,45 @@ class TaskService:
                 target_phone=target_phone,
                 status=status,
                 message=message,
+            )
+        )
+
+    def _record_task_message(
+        self,
+        db: Session,
+        task: MarketingTask,
+        session: TelegramSession,
+        chat_id: str,
+        telegram_message_id: int | None,
+        content: str,
+        image_path: str | None,
+    ) -> None:
+        existing = None
+        if telegram_message_id is not None:
+            existing = db.scalar(
+                select(Message).where(
+                    Message.session_id == session.id,
+                    Message.telegram_message_id == telegram_message_id,
+                    Message.direction == "outbound",
+                )
+            )
+        if existing:
+            existing.source = "task"
+            existing.task_id = task.id
+            existing.image_path = image_path or existing.image_path
+            return
+        db.add(
+            Message(
+                session_id=session.id,
+                chat_id=chat_id,
+                telegram_message_id=telegram_message_id,
+                sender=session.username,
+                content=content,
+                image_path=image_path,
+                direction="outbound",
+                source="task",
+                task_id=task.id,
+                read_status="sent",
             )
         )
 

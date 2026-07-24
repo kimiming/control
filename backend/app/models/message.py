@@ -17,6 +17,8 @@ class Message(Base):
     content: Mapped[str] = mapped_column(Text)
     image_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
     direction: Mapped[str] = mapped_column(String(20), default="inbound", index=True)
+    source: Mapped[str] = mapped_column(String(30), default="telegram_sync", index=True)
+    task_id: Mapped[int | None] = mapped_column(ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True, index=True)
     read_status: Mapped[str] = mapped_column(String(20), default="unread", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
@@ -24,3 +26,4 @@ class Message(Base):
 Index("ix_messages_session_created", Message.session_id, Message.created_at)
 Index("ix_messages_chat_created", Message.chat_id, Message.created_at)
 Index("ix_messages_session_chat_tg_msg", Message.session_id, Message.chat_id, Message.telegram_message_id)
+Index("ix_messages_session_chat_source_created", Message.session_id, Message.chat_id, Message.source, Message.created_at)

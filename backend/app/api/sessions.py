@@ -111,6 +111,9 @@ async def list_session_runtime(
             TelegramSession.id,
             TelegramSession.status,
             TelegramSession.bidirectional_status,
+            TelegramSession.contact_count,
+            TelegramSession.contact_scan_status,
+            TelegramSession.contact_scan_detail,
         )
         .where(TelegramSession.owner_id == user.id)
     ).all())
@@ -128,6 +131,9 @@ async def list_session_runtime(
             "id": int(row.id),
             "status": row.status.value if hasattr(row.status, "value") else str(row.status),
             "bidirectional_status": row.bidirectional_status or "unchecked",
+            "contact_count": row.contact_count,
+            "contact_scan_status": row.contact_scan_status or "idle",
+            "contact_scan_detail": row.contact_scan_detail,
             "runtime_status": runtime.get("status", "offline"),
             "runtime_worker": runtime.get("worker"),
             "runtime_last_heartbeat": runtime.get("last_heartbeat"),

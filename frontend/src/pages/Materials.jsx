@@ -1,4 +1,4 @@
-import { DeleteOutlined, EditOutlined, EyeOutlined, ImportOutlined, PlusOutlined } from '@ant-design/icons';
+import { CheckCircleOutlined, DeleteOutlined, EditOutlined, EyeOutlined, HistoryOutlined, ImportOutlined, PlusOutlined, StopOutlined } from '@ant-design/icons';
 import {
   Button,
   Descriptions,
@@ -30,10 +30,12 @@ import {
   deleteMaterial,
   deleteMaterialGroup,
   getMaterialGroups,
+  getMaterialUsageLogs,
   getMaterials,
   importTextMaterials,
   importImageMaterials,
   updateMaterial,
+  updateMaterialHealthStatus,
   updateMaterialGroup,
 } from '../api/index.js';
 
@@ -76,6 +78,12 @@ const materialTypeMeta = {
   contact: { label: '名片', color: 'purple' },
 };
 
+const healthMeta = {
+  active: { label: '正常', color: 'green' },
+  suspected: { label: '疑似异常', color: 'orange' },
+  disabled: { label: '已停用', color: 'red' },
+};
+
 const groupColorOptions = [
   { label: '红', value: 'red' },
   { label: '橙', value: 'orange' },
@@ -91,6 +99,7 @@ export default function Materials() {
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [viewing, setViewing] = useState(null);
+  const [usageMaterial, setUsageMaterial] = useState(null);
   const [selectedRowKeys, setSelectedRowKeys] = useState([]);
   const [groupsOpen, setGroupsOpen] = useState(false);
   const [groupEditorOpen, setGroupEditorOpen] = useState(false);
@@ -112,6 +121,11 @@ export default function Materials() {
     queryFn: () => getMaterials(filters),
   });
   const { data: materialGroups = [] } = useQuery({ queryKey: ['material-groups'], queryFn: getMaterialGroups });
+  const { data: usageLogs = [], isLoading: usageLoading } = useQuery({
+    queryKey: ['material-usage-logs', usageMaterial?.id],
+    queryFn: () => getMaterialUsageLogs(usageMaterial.id, { limit: 100 }),
+    enabled: Boolean(usageMaterial?.id),
+  });
   const groupMap = useMemo(() => new Map(materialGroups.map((group) => [group.id, group])), [materialGroups]);
 
   const renderGroupTag = (groupId) => {
@@ -260,6 +274,15 @@ export default function Materials() {
     onError: (error) => message.error(error?.response?.data?.detail || error.message || '批量导入图片失败'),
   });
 
+  const healthMutation = useMutation({
+    mutationFn: ({ id, status }) => updateMaterialHealthStatus(id, status),
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['materials'] });
+      message.success(data.health_status === 'active' ? '素材已恢复使用' : '素材已停用，不再参与随机抽取');
+    },
+    onError: (error) => message.error(error?.response?.data?.detail || error.message || '素材状态更新失败'),
+  });
+
   const columns = [
     { title: '编号', dataIndex: 'id', width: 90 },
     { title: '名称', dataIndex: 'name', width: 180 },
@@ -270,6 +293,19 @@ export default function Materials() {
       render: (value) => <Tag color={materialTypeMeta[value]?.color || 'default'}>{materialTypeMeta[value]?.label || value}</Tag>,
     },
     { title: '优先级', dataIndex: 'priority', width: 100 },
+    {
+      title: '健康状态',
+      dataIndex: 'health_status',
+      width: 120,
+      render: (value = 'active') => <Tag color={healthMeta[value]?.color || 'default'}>{healthMeta[value]?.label || value}</Tag>,
+    },
+    { title: '成功/失败', width: 110, render: (_, record) => `${record.success_count || 0}/${record.failure_count || 0}` },
+    {
+      title: '连续失败',
+      dataIndex: 'consecutive_failures',
+      width: 100,
+      render: (value) => <Tag color={value ? 'orange' : 'default'}>{value || 0}</Tag>,
+    },
     {
       title: '所属分组',
       dataIndex: 'group_id',
@@ -286,19 +322,36 @@ export default function Materials() {
     {
       title: '操作',
       key: 'actions',
-      width: 150,
+      width: 220,
       fixed: 'right',
       render: (_, record) => (
-        <Space>
+        <Space size={4} wrap={false}>
           <Tooltip title="查看">
-            <Button icon={<EyeOutlined />} onClick={() => setViewing(record)} />
+            <Button size="small" icon={<EyeOutlined />} onClick={() => setViewing(record)} />
           </Tooltip>
           <Tooltip title="编辑">
-            <Button icon={<EditOutlined />} onClick={() => { setEditing(record); setModalOpen(true); }} />
+            <Button size="small" icon={<EditOutlined />} onClick={() => { setEditing(record); setModalOpen(true); }} />
           </Tooltip>
+          <Tooltip title="使用记录">
+            <Button size="small" icon={<HistoryOutlined />} onClick={() => setUsageMaterial(record)} />
+          </Tooltip>
+          {record.health_status === 'disabled' ? (
+            <Tooltip title="恢复使用">
+              <Button
+                size="small"
+                icon={<CheckCircleOutlined />}
+                loading={healthMutation.isPending && healthMutation.variables?.id === record.id}
+                onClick={() => healthMutation.mutate({ id: record.id, status: 'active' })}
+              />
+            </Tooltip>
+          ) : (
+            <Popconfirm title="停用后该素材不再参与任务随机抽取，确认停用？" onConfirm={() => healthMutation.mutate({ id: record.id, status: 'disabled' })}>
+              <Tooltip title="停用素材"><Button size="small" danger icon={<StopOutlined />} /></Tooltip>
+            </Popconfirm>
+          )}
           <Popconfirm title="确认删除该素材？" onConfirm={() => deleteMutation.mutate(record.id)}>
             <Tooltip title="删除">
-              <Button danger icon={<DeleteOutlined />} />
+              <Button size="small" danger icon={<DeleteOutlined />} />
             </Tooltip>
           </Popconfirm>
         </Space>
@@ -361,6 +414,17 @@ export default function Materials() {
           />
           <Select
             allowClear
+            placeholder="健康状态"
+            style={{ width: 140 }}
+            value={filters.health_status}
+            options={Object.entries(healthMeta).map(([value, meta]) => ({ value, label: meta.label }))}
+            onChange={(value) => {
+              setFilters((current) => ({ ...current, health_status: value }));
+              setSelectedRowKeys([]);
+            }}
+          />
+          <Select
+            allowClear
             placeholder="所属分组"
             style={{ width: 160 }}
             value={filters.group_id}
@@ -384,7 +448,7 @@ export default function Materials() {
         dataSource={materials}
         loading={isLoading}
         rowSelection={{ selectedRowKeys, onChange: setSelectedRowKeys }}
-        scroll={{ x: 1100 }}
+        scroll={{ x: 1450 }}
       />
 
       <Modal
@@ -505,6 +569,11 @@ export default function Materials() {
               <Descriptions.Item label="类型">{materialTypeMeta[viewing.material_type]?.label || viewing.material_type}</Descriptions.Item>
               <Descriptions.Item label="优先级">{viewing.priority}</Descriptions.Item>
               <Descriptions.Item label="所属分组">{renderGroupTag(viewing.group_id)}</Descriptions.Item>
+              <Descriptions.Item label="健康状态"><Tag color={healthMeta[viewing.health_status]?.color}>{healthMeta[viewing.health_status]?.label || viewing.health_status}</Tag></Descriptions.Item>
+              <Descriptions.Item label="成功/失败">{viewing.success_count || 0} / {viewing.failure_count || 0}</Descriptions.Item>
+              <Descriptions.Item label="连续失败">{viewing.consecutive_failures || 0}</Descriptions.Item>
+              <Descriptions.Item label="最近错误">{viewing.last_error || '-'}</Descriptions.Item>
+              <Descriptions.Item label="最近失败时间">{viewing.last_failed_at ? dayjs(viewing.last_failed_at).format('YYYY-MM-DD HH:mm:ss') : '-'}</Descriptions.Item>
               <Descriptions.Item label="备注">{viewing.remark || '-'}</Descriptions.Item>
               <Descriptions.Item label="创建时间">{viewing.created_at ? dayjs(viewing.created_at).format('YYYY-MM-DD HH:mm:ss') : '-'}</Descriptions.Item>
             </Descriptions>
@@ -521,6 +590,29 @@ export default function Materials() {
             ) : null}
           </Space>
         ) : null}
+      </Drawer>
+
+      <Drawer
+        title={`素材使用记录${usageMaterial ? `：${usageMaterial.name}` : ''}`}
+        open={Boolean(usageMaterial)}
+        onClose={() => setUsageMaterial(null)}
+        width={820}
+      >
+        <Table
+          rowKey="id"
+          loading={usageLoading}
+          dataSource={usageLogs}
+          pagination={false}
+          scroll={{ x: 760 }}
+          columns={[
+            { title: '时间', dataIndex: 'created_at', width: 180, render: (value) => dayjs(value).format('YYYY-MM-DD HH:mm:ss') },
+            { title: '结果', dataIndex: 'result', width: 90, render: (value) => <Tag color={value === 'success' ? 'green' : 'red'}>{value === 'success' ? '成功' : '素材失败'}</Tag> },
+            { title: '任务ID', dataIndex: 'task_id', width: 90, render: (value) => value || '-' },
+            { title: 'Session ID', dataIndex: 'session_id', width: 100, render: (value) => value || '-' },
+            { title: '目标', dataIndex: 'target', width: 160, ellipsis: true, render: (value) => value || '-' },
+            { title: '错误详情', dataIndex: 'error_message', ellipsis: true, render: (value) => value || '-' },
+          ]}
+        />
       </Drawer>
 
       <Modal

@@ -5,8 +5,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import func, or_, select, update
-from sqlalchemy.orm import Session
+from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy.orm import Session, aliased
 from telethon.tl.functions.messages import SendMediaRequest
 from telethon.tl.functions.contacts import ImportContactsRequest
 from telethon.tl.types import InputMediaContact, InputPeerUser, InputPhoneContact
@@ -32,9 +32,13 @@ class CustomerService:
         reply_status: str | None = None,
         is_favorite: bool | None = None,
         owner_id: int | None = None,
+        source: str | None = None,
     ) -> list[dict[str, Any]]:
-        stmt = self._customer_list_stmt(kf_id, keyword, reply_status, is_favorite, owner_id)
-        return [self.serialize_customer(db, customer, session, agent) for customer, session, agent in db.execute(stmt).all()]
+        stmt = self._customer_list_stmt(kf_id, keyword, reply_status, is_favorite, owner_id, source)
+        return [
+            self.serialize_customer(db, customer, session, agent, source=source)
+            for customer, session, agent in db.execute(stmt).all()
+        ]
 
     def list_customer_page(
         self,
@@ -46,13 +50,17 @@ class CustomerService:
         reply_status: str | None = None,
         is_favorite: bool | None = None,
         owner_id: int | None = None,
+        source: str | None = None,
     ) -> dict[str, Any]:
-        stmt = self._customer_list_stmt(kf_id, keyword, reply_status, is_favorite, owner_id)
+        stmt = self._customer_list_stmt(kf_id, keyword, reply_status, is_favorite, owner_id, source)
         count_stmt = select(func.count()).select_from(stmt.order_by(None).subquery())
         total = int(db.scalar(count_stmt) or 0)
         rows = db.execute(stmt.offset((page - 1) * page_size).limit(page_size)).all()
         return {
-            "items": [self.serialize_customer(db, customer, session, agent) for customer, session, agent in rows],
+            "items": [
+                self.serialize_customer(db, customer, session, agent, source=source)
+                for customer, session, agent in rows
+            ],
             "page": page,
             "page_size": page_size,
             "total": total,
@@ -66,9 +74,10 @@ class CustomerService:
         keyword: str | None = None,
         reply_status: str | None = None,
         owner_id: int | None = None,
+        source: str | None = None,
     ) -> dict[str, int]:
-        all_stmt = self._customer_list_stmt(kf_id, keyword, reply_status, None, owner_id)
-        favorite_stmt = self._customer_list_stmt(kf_id, keyword, reply_status, True, owner_id)
+        all_stmt = self._customer_list_stmt(kf_id, keyword, reply_status, None, owner_id, source)
+        favorite_stmt = self._customer_list_stmt(kf_id, keyword, reply_status, True, owner_id, source)
         return {
             "all": int(db.scalar(select(func.count()).select_from(all_stmt.order_by(None).subquery())) or 0),
             "favorites": int(db.scalar(select(func.count()).select_from(favorite_stmt.order_by(None).subquery())) or 0),
@@ -81,6 +90,7 @@ class CustomerService:
         reply_status: str | None,
         is_favorite: bool | None,
         owner_id: int | None,
+        source: str | None = None,
     ) -> Any:
         stmt = (
             select(Customer, TelegramSession, SupportAgent)
@@ -92,6 +102,44 @@ class CustomerService:
                 or_(Customer.phone_number.is_(None), Customer.phone_number.not_in(("+42777", "42777"))),
             )
         )
+        duplicate = aliased(Customer)
+        same_identity = or_(
+            and_(
+                Customer.tg_id.is_not(None),
+                duplicate.tg_id == Customer.tg_id,
+            ),
+            and_(
+                Customer.tg_id.is_(None),
+                Customer.username.is_not(None),
+                duplicate.tg_id.is_(None),
+                duplicate.username == Customer.username,
+            ),
+            and_(
+                Customer.tg_id.is_(None),
+                Customer.username.is_(None),
+                Customer.phone_number.is_not(None),
+                duplicate.tg_id.is_(None),
+                duplicate.username.is_(None),
+                duplicate.phone_number == Customer.phone_number,
+            ),
+            and_(
+                Customer.tg_id.is_(None),
+                Customer.username.is_(None),
+                Customer.phone_number.is_(None),
+                duplicate.id == Customer.id,
+            ),
+        )
+        canonical_customer_id = (
+            select(func.max(duplicate.id))
+            .where(
+                duplicate.owner_id == Customer.owner_id,
+                duplicate.assigned_session_id == Customer.assigned_session_id,
+                same_identity,
+            )
+            .correlate(Customer)
+            .scalar_subquery()
+        )
+        stmt = stmt.where(Customer.id == canonical_customer_id)
         if owner_id is not None:
             stmt = stmt.where(Customer.owner_id == owner_id)
         if kf_id is not None:
@@ -121,6 +169,17 @@ class CustomerService:
             .limit(1)
             .scalar_subquery()
         )
+        if source == "task":
+            task_message_exists = select(Message.id).where(
+                Message.session_id == Customer.assigned_session_id,
+                Message.source == "task",
+                or_(
+                    Message.chat_id == Customer.tg_id.collate("utf8mb4_unicode_ci"),
+                    Message.chat_id == Customer.username.collate("utf8mb4_unicode_ci"),
+                    Message.chat_id == Customer.phone_number.collate("utf8mb4_unicode_ci"),
+                ),
+            ).exists()
+            stmt = stmt.where(task_message_exists)
         if reply_status == "replied":
             stmt = stmt.where(or_(Customer.reply_status == "replied", has_unread_inbound))
         elif reply_status == "not_replied":
@@ -139,7 +198,8 @@ class CustomerService:
                 ~has_unread_inbound,
             )
         if is_favorite is not None:
-            stmt = stmt.where(Customer.is_favorite == is_favorite)
+            favorite_column = Customer.is_task_favorite if source == "task" else Customer.is_favorite
+            stmt = stmt.where(favorite_column == is_favorite)
         if keyword:
             like = f"%{keyword}%"
             stmt = stmt.where(
@@ -159,9 +219,19 @@ class CustomerService:
             raise ValueError("Customer not found")
         return customer
 
-    def set_favorite(self, db: Session, customer_id: int, is_favorite: bool, owner_id: int | None = None) -> Customer:
+    def set_favorite(
+        self,
+        db: Session,
+        customer_id: int,
+        is_favorite: bool,
+        owner_id: int | None = None,
+        source: str | None = None,
+    ) -> Customer:
         customer = self.get_customer(db, customer_id, owner_id)
-        customer.is_favorite = is_favorite
+        if source == "task":
+            customer.is_task_favorite = is_favorite
+        else:
+            customer.is_favorite = is_favorite
         db.commit()
         db.refresh(customer)
         return customer
@@ -173,6 +243,7 @@ class CustomerService:
         page_size: int = 20,
         before_id: int | None = None,
         owner_id: int | None = None,
+        source: str | None = None,
     ) -> dict[str, Any]:
         customer = self.get_customer(db, customer_id, owner_id)
         chat_key = self._chat_key(customer)
@@ -184,6 +255,27 @@ class CustomerService:
         )
         if before_id is not None:
             stmt = stmt.where(Message.id < before_id)
+        if source == "task":
+            task_message = aliased(Message)
+            latest_task_sent_at = (
+                select(func.max(task_message.created_at))
+                .where(
+                    task_message.session_id == customer.assigned_session_id,
+                    task_message.chat_id == chat_key,
+                    task_message.direction == "outbound",
+                    task_message.source == "task",
+                )
+                .scalar_subquery()
+            )
+            stmt = stmt.where(
+                or_(
+                    Message.source == "task",
+                    and_(
+                        Message.direction == "inbound",
+                        Message.created_at > latest_task_sent_at,
+                    ),
+                )
+            )
         fetched = list(db.scalars(stmt).all())
         has_more = len(fetched) > page_size
         messages = list(reversed(fetched[:page_size]))
@@ -246,6 +338,7 @@ class CustomerService:
                     content=content,
                     image_path=image_path,
                     direction="outbound",
+                    source="manual_reply",
                     read_status="sent",
                 )
             )
@@ -271,12 +364,18 @@ class CustomerService:
         username = normalize_username(username) or (normalize_username(target) if target_type == "username" else None)
         phone_number = phone_number or (target if target_type == "phone" else None)
         stmt = select(Customer).where(Customer.assigned_session_id == session.id, Customer.owner_id == owner_id)
+        identity_filters = []
         if tg_id:
-            customer = db.scalar(stmt.where(Customer.tg_id == tg_id))
-        elif target_type == "username":
-            customer = db.scalar(stmt.where(Customer.username == username))
-        else:
-            customer = db.scalar(stmt.where(Customer.phone_number == phone_number))
+            identity_filters.append(Customer.tg_id == tg_id)
+        if username:
+            identity_filters.append(Customer.username == username)
+        if phone_number:
+            identity_filters.append(Customer.phone_number == phone_number)
+        customer = (
+            db.scalar(stmt.where(or_(*identity_filters)).order_by(Customer.id.desc()).limit(1))
+            if identity_filters
+            else None
+        )
         if not customer:
             customer = Customer(owner_id=owner_id, phone_number=phone_number, username=username, assigned_session_id=session.id)
             db.add(customer)
@@ -308,8 +407,34 @@ class CustomerService:
         customer: Customer,
         session: TelegramSession | None = None,
         support_agent: SupportAgent | None = None,
+        source: str | None = None,
     ) -> dict[str, Any]:
         unread_count = self.unread_count(db, customer)
+        reply_status = "replied" if unread_count else customer.reply_status
+        if source == "task":
+            chat_key = self._chat_key(customer)
+            latest_task_sent_at = db.scalar(
+                select(func.max(Message.created_at)).where(
+                    Message.session_id == customer.assigned_session_id,
+                    Message.chat_id == chat_key,
+                    Message.direction == "outbound",
+                    Message.source == "task",
+                )
+            )
+            has_project_reply = bool(
+                latest_task_sent_at
+                and db.scalar(
+                    select(Message.id)
+                    .where(
+                        Message.session_id == customer.assigned_session_id,
+                        Message.chat_id == chat_key,
+                        Message.direction == "inbound",
+                        Message.created_at > latest_task_sent_at,
+                    )
+                    .limit(1)
+                )
+            )
+            reply_status = "replied" if has_project_reply else "not_replied"
         return {
             "id": customer.id,
             "phone_number": customer.phone_number,
@@ -320,11 +445,14 @@ class CustomerService:
             "assigned_session_id": customer.assigned_session_id,
             "assigned_session_name": session.session_name if session else None,
             "assigned_session_status": session.status.value if session and hasattr(session.status, "value") else (session.status if session else None),
+            "assigned_session_bidirectional_status": session.bidirectional_status if session else None,
+            "assigned_session_bidirectional_detail": session.bidirectional_detail if session else None,
+            "assigned_session_last_bidirectional_check_at": session.last_bidirectional_check_at.isoformat() if session and session.last_bidirectional_check_at else None,
             "kf_id": customer.kf_id,
             "kf_name": support_agent.name if support_agent else None,
             "send_status": customer.send_status,
-            "reply_status": "replied" if unread_count else customer.reply_status,
-            "is_favorite": customer.is_favorite,
+            "reply_status": reply_status,
+            "is_favorite": customer.is_task_favorite if source == "task" else customer.is_favorite,
             "unread_count": unread_count,
             "remark": customer.remark,
             "last_message_at": customer.last_message_at.isoformat() if customer.last_message_at else None,
@@ -342,6 +470,8 @@ class CustomerService:
             "content": message.content,
             "image_path": message.image_path,
             "direction": message.direction,
+            "source": message.source,
+            "task_id": message.task_id,
             "read_status": message.read_status,
             "created_at": message.created_at.isoformat(),
         }

@@ -50,7 +50,7 @@ services:
       - ./backend/.env
     environment:
       TZ: ${TZ:-Asia/Shanghai}
-      SESSION_WORKER_COUNT: 12
+      SESSION_WORKER_COUNT: ${SESSION_WORKER_COUNT:-6}
     volumes:
       - telegram_sessions:/app/telegram_sessions
       - ./backend/static:/app/static
@@ -70,6 +70,7 @@ services:
     restart: unless-stopped
 
   session_worker_0:
+    profiles: ["session-workers"]
     build:
       context: ./backend
       dockerfile: Dockerfile
@@ -80,9 +81,9 @@ services:
       TZ: ${TZ:-Asia/Shanghai}
       APP_ROLE: session_worker
       SESSION_WORKER_INDEX: 0
-      SESSION_WORKER_COUNT: 12
+      SESSION_WORKER_COUNT: ${SESSION_WORKER_COUNT:-6}
       SESSION_CONNECT_CONCURRENCY: 5
-      ENABLE_TASK_QUEUE: "false"
+      ENABLE_TASK_QUEUE: "true"
       SESSION_STARTUP_HISTORY_SYNC: "true"
       SESSION_HISTORY_SYNC_DAYS: 2
       INBOUND_DB_WORKERS: 1
@@ -101,6 +102,7 @@ services:
     restart: unless-stopped
 
   session_worker_1:
+    profiles: ["session-workers"]
     build:
       context: ./backend
       dockerfile: Dockerfile
@@ -111,9 +113,9 @@ services:
       TZ: ${TZ:-Asia/Shanghai}
       APP_ROLE: session_worker
       SESSION_WORKER_INDEX: 1
-      SESSION_WORKER_COUNT: 12
+      SESSION_WORKER_COUNT: ${SESSION_WORKER_COUNT:-6}
       SESSION_CONNECT_CONCURRENCY: 5
-      ENABLE_TASK_QUEUE: "false"
+      ENABLE_TASK_QUEUE: "true"
       SESSION_STARTUP_HISTORY_SYNC: "true"
       SESSION_HISTORY_SYNC_DAYS: 2
       INBOUND_DB_WORKERS: 1
@@ -132,6 +134,7 @@ services:
     restart: unless-stopped
 
   session_worker_2:
+    profiles: ["session-workers"]
     build:
       context: ./backend
       dockerfile: Dockerfile
@@ -142,9 +145,9 @@ services:
       TZ: ${TZ:-Asia/Shanghai}
       APP_ROLE: session_worker
       SESSION_WORKER_INDEX: 2
-      SESSION_WORKER_COUNT: 12
+      SESSION_WORKER_COUNT: ${SESSION_WORKER_COUNT:-6}
       SESSION_CONNECT_CONCURRENCY: 5
-      ENABLE_TASK_QUEUE: "false"
+      ENABLE_TASK_QUEUE: "true"
       SESSION_STARTUP_HISTORY_SYNC: "true"
       SESSION_HISTORY_SYNC_DAYS: 2
       INBOUND_DB_WORKERS: 1
@@ -163,6 +166,7 @@ services:
     restart: unless-stopped
 
   session_worker_3:
+    profiles: ["session-workers"]
     build:
       context: ./backend
       dockerfile: Dockerfile
@@ -173,9 +177,9 @@ services:
       TZ: ${TZ:-Asia/Shanghai}
       APP_ROLE: session_worker
       SESSION_WORKER_INDEX: 3
-      SESSION_WORKER_COUNT: 12
+      SESSION_WORKER_COUNT: ${SESSION_WORKER_COUNT:-6}
       SESSION_CONNECT_CONCURRENCY: 5
-      ENABLE_TASK_QUEUE: "false"
+      ENABLE_TASK_QUEUE: "true"
       SESSION_STARTUP_HISTORY_SYNC: "true"
       SESSION_HISTORY_SYNC_DAYS: 2
       INBOUND_DB_WORKERS: 1
@@ -194,6 +198,7 @@ services:
     restart: unless-stopped
 
   session_worker_4:
+    profiles: ["session-workers"]
     build:
       context: ./backend
       dockerfile: Dockerfile
@@ -204,9 +209,9 @@ services:
       TZ: ${TZ:-Asia/Shanghai}
       APP_ROLE: session_worker
       SESSION_WORKER_INDEX: 4
-      SESSION_WORKER_COUNT: 12
+      SESSION_WORKER_COUNT: ${SESSION_WORKER_COUNT:-6}
       SESSION_CONNECT_CONCURRENCY: 5
-      ENABLE_TASK_QUEUE: "false"
+      ENABLE_TASK_QUEUE: "true"
       SESSION_STARTUP_HISTORY_SYNC: "true"
       SESSION_HISTORY_SYNC_DAYS: 2
       INBOUND_DB_WORKERS: 1
@@ -225,6 +230,7 @@ services:
     restart: unless-stopped
 
   session_worker_5:
+    profiles: ["session-workers"]
     build:
       context: ./backend
       dockerfile: Dockerfile
@@ -235,9 +241,9 @@ services:
       TZ: ${TZ:-Asia/Shanghai}
       APP_ROLE: session_worker
       SESSION_WORKER_INDEX: 5
-      SESSION_WORKER_COUNT: 12
+      SESSION_WORKER_COUNT: ${SESSION_WORKER_COUNT:-6}
       SESSION_CONNECT_CONCURRENCY: 5
-      ENABLE_TASK_QUEUE: "false"
+      ENABLE_TASK_QUEUE: "true"
       SESSION_STARTUP_HISTORY_SYNC: "true"
       SESSION_HISTORY_SYNC_DAYS: 2
       INBOUND_DB_WORKERS: 1
@@ -256,6 +262,7 @@ services:
     restart: unless-stopped
 
   session_worker_6:
+    profiles: ["session-workers"]
     build:
       context: ./backend
       dockerfile: Dockerfile
@@ -266,7 +273,7 @@ services:
       TZ: ${TZ:-Asia/Shanghai}
       APP_ROLE: session_worker
       SESSION_WORKER_INDEX: 6
-      SESSION_WORKER_COUNT: 12
+      SESSION_WORKER_COUNT: ${SESSION_WORKER_COUNT:-6}
       SESSION_CONNECT_CONCURRENCY: 5
       ENABLE_TASK_QUEUE: "false"
       SESSION_STARTUP_HISTORY_SYNC: "true"
@@ -287,6 +294,7 @@ services:
     restart: unless-stopped
 
   session_worker_7:
+    profiles: ["session-workers"]
     build:
       context: ./backend
       dockerfile: Dockerfile
@@ -297,7 +305,7 @@ services:
       TZ: ${TZ:-Asia/Shanghai}
       APP_ROLE: session_worker
       SESSION_WORKER_INDEX: 7
-      SESSION_WORKER_COUNT: 12
+      SESSION_WORKER_COUNT: ${SESSION_WORKER_COUNT:-6}
       SESSION_CONNECT_CONCURRENCY: 5
       ENABLE_TASK_QUEUE: "false"
       SESSION_STARTUP_HISTORY_SYNC: "true"
@@ -318,6 +326,7 @@ services:
     restart: unless-stopped
 
   session_worker_8:
+    profiles: ["session-workers"]
     build:
       context: ./backend
       dockerfile: Dockerfile
@@ -328,7 +337,7 @@ services:
       TZ: ${TZ:-Asia/Shanghai}
       APP_ROLE: session_worker
       SESSION_WORKER_INDEX: 8
-      SESSION_WORKER_COUNT: 12
+      SESSION_WORKER_COUNT: ${SESSION_WORKER_COUNT:-6}
       SESSION_CONNECT_CONCURRENCY: 5
       ENABLE_TASK_QUEUE: "false"
       SESSION_STARTUP_HISTORY_SYNC: "true"
@@ -349,6 +358,7 @@ services:
     restart: unless-stopped
 
   session_worker_9:
+    profiles: ["session-workers"]
     build:
       context: ./backend
       dockerfile: Dockerfile
@@ -359,7 +369,7 @@ services:
       TZ: ${TZ:-Asia/Shanghai}
       APP_ROLE: session_worker
       SESSION_WORKER_INDEX: 9
-      SESSION_WORKER_COUNT: 12
+      SESSION_WORKER_COUNT: ${SESSION_WORKER_COUNT:-6}
       SESSION_CONNECT_CONCURRENCY: 5
       ENABLE_TASK_QUEUE: "false"
       SESSION_STARTUP_HISTORY_SYNC: "true"
@@ -380,6 +390,7 @@ services:
     restart: unless-stopped
 
   session_worker_10:
+    profiles: ["session-workers"]
     build:
       context: ./backend
       dockerfile: Dockerfile
@@ -390,7 +401,7 @@ services:
       TZ: ${TZ:-Asia/Shanghai}
       APP_ROLE: session_worker
       SESSION_WORKER_INDEX: 10
-      SESSION_WORKER_COUNT: 12
+      SESSION_WORKER_COUNT: ${SESSION_WORKER_COUNT:-6}
       SESSION_CONNECT_CONCURRENCY: 5
       ENABLE_TASK_QUEUE: "false"
       SESSION_STARTUP_HISTORY_SYNC: "true"
@@ -411,6 +422,7 @@ services:
     restart: unless-stopped
 
   session_worker_11:
+    profiles: ["session-workers"]
     build:
       context: ./backend
       dockerfile: Dockerfile
@@ -421,7 +433,7 @@ services:
       TZ: ${TZ:-Asia/Shanghai}
       APP_ROLE: session_worker
       SESSION_WORKER_INDEX: 11
-      SESSION_WORKER_COUNT: 12
+      SESSION_WORKER_COUNT: ${SESSION_WORKER_COUNT:-6}
       SESSION_CONNECT_CONCURRENCY: 5
       ENABLE_TASK_QUEUE: "false"
       SESSION_STARTUP_HISTORY_SYNC: "true"

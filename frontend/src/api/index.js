@@ -110,6 +110,8 @@ export const exportTaskRemainingTargets = (id) => api.get(`/tasks/${id}/remainin
 export const getMaterials = (params) => api.get('/materials', { params }).then((res) => res.data);
 export const createMaterial = (data) => api.post('/materials', data).then((res) => res.data);
 export const updateMaterial = (id, data) => api.put(`/materials/${id}`, data).then((res) => res.data);
+export const updateMaterialHealthStatus = (id, status) => api.put(`/materials/${id}/health-status`, { status }).then((res) => res.data);
+export const getMaterialUsageLogs = (id, params) => api.get(`/materials/${id}/usage-logs`, { params }).then((res) => res.data);
 export const deleteMaterial = (id) => api.delete(`/materials/${id}`).then((res) => res.data);
 export const batchDeleteMaterials = (ids) => api.post('/materials/batch-delete', { ids }).then((res) => res.data);
 export const getMaterialGroups = () => api.get('/materials/groups').then((res) => res.data);
@@ -128,7 +130,11 @@ export const replyCustomer = (id, data) => api.post(
   typeof data === 'string' ? { text: data } : data,
   { timeout: 120000 },
 ).then((res) => res.data);
-export const updateCustomerFavorite = (id, isFavorite) => api.put(`/customers/${id}/favorite`, { is_favorite: isFavorite }).then((res) => res.data);
+export const updateCustomerFavorite = (id, isFavorite, source) => api.put(
+  `/customers/${id}/favorite`,
+  { is_favorite: isFavorite },
+  { params: source ? { source } : undefined },
+).then((res) => res.data);
 export const getCustomerProfiles = () => api.get('/customer-profiles').then((res) => res.data);
 export const getCustomerProfile = (id) => api.get(`/customer-profiles/${id}`).then((res) => res.data);
 export const createCustomerProfile = (data) => api.post('/customer-profiles', data).then((res) => res.data);

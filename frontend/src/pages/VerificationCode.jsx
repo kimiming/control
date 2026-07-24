@@ -27,8 +27,26 @@ export default function VerificationCode() {
 
   const copyCode = async () => {
     if (!data?.code) return;
-    await navigator.clipboard.writeText(data.code);
-    message.success('验证码已复制');
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(data.code);
+      } else {
+        const textarea = document.createElement('textarea');
+        textarea.value = data.code;
+        textarea.setAttribute('readonly', '');
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        textarea.setSelectionRange(0, textarea.value.length);
+        const copied = document.execCommand('copy');
+        document.body.removeChild(textarea);
+        if (!copied) throw new Error('浏览器拒绝访问剪贴板');
+      }
+      message.success('验证码已复制');
+    } catch (copyError) {
+      message.error(copyError?.message || '复制失败，请长按验证码手动复制');
+    }
   };
 
   return (

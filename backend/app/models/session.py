@@ -46,6 +46,8 @@ class TelegramSession(Base):
     last_bidirectional_check_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     contact_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     contacts_scanned_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    contact_scan_status: Mapped[str] = mapped_column(String(30), default="idle", index=True)
+    contact_scan_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
     group_id: Mapped[int | None] = mapped_column(ForeignKey("session_groups.id"), nullable=True, index=True)
     kf_id: Mapped[int | None] = mapped_column(ForeignKey("support_agents.id", ondelete="SET NULL"), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)

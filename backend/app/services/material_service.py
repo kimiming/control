@@ -1,4 +1,5 @@
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -6,7 +7,7 @@ from fastapi import UploadFile
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from app.models.material import Material, MaterialGroup
+from app.models.material import Material, MaterialGroup, MaterialUsageLog
 from app.models.task import MarketingTask
 from app.services.image_storage import save_compressed_image
 
@@ -19,6 +20,7 @@ class MaterialService:
         owner_id: int | None = None,
         group_id: int | None = None,
         keyword: str | None = None,
+        health_status: str | None = None,
     ) -> list[Material]:
         stmt = select(Material).order_by(Material.priority.desc(), Material.created_at.asc())
         if owner_id is not None:
@@ -27,6 +29,8 @@ class MaterialService:
             stmt = stmt.where(Material.material_type == material_type)
         if group_id is not None:
             stmt = stmt.where(Material.group_id.is_(None) if group_id == 0 else Material.group_id == group_id)
+        if health_status:
+            stmt = stmt.where(Material.health_status == health_status)
         normalized_keyword = (keyword or "").strip()
         if normalized_keyword:
             stmt = stmt.where(or_(
@@ -254,6 +258,69 @@ class MaterialService:
         db.commit()
         return len(materials)
 
+    def set_health_status(self, db: Session, material_id: int, status: str, owner_id: int | None = None) -> Material:
+        if status not in {"active", "disabled"}:
+            raise ValueError("Invalid material health status")
+        material = self.get_material(db, material_id, owner_id)
+        material.health_status = status
+        material.disabled_at = datetime.utcnow() if status == "disabled" else None
+        if status == "active":
+            material.consecutive_failures = 0
+            material.last_error = None
+        db.commit()
+        db.refresh(material)
+        return material
+
+    def list_usage_logs(self, db: Session, material_id: int, owner_id: int | None = None, limit: int = 100) -> list[MaterialUsageLog]:
+        self.get_material(db, material_id, owner_id)
+        return list(db.scalars(
+            select(MaterialUsageLog)
+            .where(MaterialUsageLog.material_id == material_id)
+            .order_by(MaterialUsageLog.created_at.desc())
+            .limit(min(max(limit, 1), 200))
+        ).all())
+
+    def record_usage(
+        self,
+        db: Session,
+        material_ids: list[int],
+        *,
+        task_id: int | None,
+        session_id: int | None,
+        target: str | None,
+        result: str,
+        error: str | None = None,
+        immediate_disable: bool = False,
+    ) -> None:
+        for material_id in set(material_ids):
+            material = db.get(Material, material_id)
+            if not material:
+                continue
+            if result == "success":
+                material.success_count += 1
+                material.consecutive_failures = 0
+                if material.health_status == "suspected":
+                    material.health_status = "active"
+                material.last_error = None
+            else:
+                material.failure_count += 1
+                material.consecutive_failures += 1
+                material.last_error = (error or "素材发送失败")[:2000]
+                material.last_failed_at = datetime.utcnow()
+                if immediate_disable or material.consecutive_failures >= 3:
+                    material.health_status = "disabled"
+                    material.disabled_at = datetime.utcnow()
+                else:
+                    material.health_status = "suspected"
+            db.add(MaterialUsageLog(
+                material_id=material.id,
+                task_id=task_id,
+                session_id=session_id,
+                target=target,
+                result=result,
+                error_message=(error or "")[:2000] or None,
+            ))
+
     def serialize_material(self, material: Material) -> dict[str, Any]:
         return {
             "id": material.id,
@@ -263,6 +330,13 @@ class MaterialService:
             "content": material.content,
             "file_path": material.file_path,
             "priority": material.priority,
+            "health_status": material.health_status or "active",
+            "success_count": material.success_count or 0,
+            "failure_count": material.failure_count or 0,
+            "consecutive_failures": material.consecutive_failures or 0,
+            "last_error": material.last_error,
+            "last_failed_at": material.last_failed_at.isoformat() if material.last_failed_at else None,
+            "disabled_at": material.disabled_at.isoformat() if material.disabled_at else None,
             "remark": material.remark,
             "created_at": material.created_at.isoformat() if material.created_at else None,
             "updated_at": material.updated_at.isoformat() if material.updated_at else None,
